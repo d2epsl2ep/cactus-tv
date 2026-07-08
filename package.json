@@ -1,25 +1,28 @@
 {
   "name": "cactus-tv",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "private": true,
   "description": "Cactus TV for Cloudflare Pages, Pages Functions and D1.",
   "scripts": {
     "dev": "wrangler pages dev public",
-    "vendor": "node -e \"require('node:fs').copyFileSync('node_modules/hls.js/dist/hls.min.js', 'public/vendor/hls.min.js')\"",
+    "vendor": "node -e \"const fs=require('node:fs');fs.copyFileSync('node_modules/hls.js/dist/hls.min.js','public/vendor/hls.min.js');fs.copyFileSync('node_modules/dashjs/dist/legacy/umd/dash.all.min.js','public/vendor/dash.all.min.js');fs.copyFileSync('node_modules/dashjs/dist/legacy/umd/dash.all.min.js.LICENSE.txt','public/vendor/dash.all.min.js.LICENSE.txt')\"",
     "build:functions": "wrangler pages functions build functions --outdir .functions-build",
-    "check:js": "node --check public/js/api.js && node --check public/js/storage.js && node --check public/js/player.js && node --check public/js/player-ui.js && node --check public/js/app.js && node --check public/js/admin.js",
+    "check:js": "node --check public/js/api.js && node --check public/js/storage.js && node --check public/js/player.js && node --check public/js/player-ui.js && node --check public/js/app.js && node --check public/js/admin.js && node --check public/js/app-legacy.js",
     "preflight": "node scripts/preflight.mjs",
-    "check": "npm run build:functions && npm run check:js && npm run preflight",
+    "check": "npm run build:functions && npm run build:legacy && npm run check:js && npm run preflight",
     "smoke": "node scripts/smoke.mjs",
     "db:local": "wrangler d1 execute cactus-tv-db --local --file=migrations/0001_init.sql",
     "db:remote": "wrangler d1 execute cactus-tv-db --remote --file=migrations/0001_init.sql",
-    "deploy": "wrangler pages deploy public --project-name cactus-tv"
+    "deploy": "wrangler pages deploy public --project-name cactus-tv",
+    "build:legacy": "esbuild public/js/app.js --bundle --format=iife --target=es2016 --minify --outfile=public/js/app-legacy.js"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260701.0",
+    "esbuild": "^0.25.9",
     "wrangler": "^4.0.0"
   },
   "dependencies": {
+    "dashjs": "^5.2.0",
     "hls.js": "1.6.13"
   },
   "engines": {

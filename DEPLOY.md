@@ -1,4 +1,4 @@
-# Cactus TV v0.2.3 部署教程
+# Cactus TV v0.6.0 部署教程
 
 这份教程沿用项目原来的部署方式：
 
@@ -327,7 +327,7 @@ Value: 你自己设置的管理密钥
 
 要求：
 
-- 至少 16 个字符
+- 至少 8 个字符
 - 不要使用常用密码
 - 不要写进 GitHub 文件
 
@@ -616,7 +616,7 @@ Variable name: DB
 
 没有设置 `ADMIN_TOKEN`，或变量没有应用到 Production。
 
-检查 Variables and Secrets，确认 `ADMIN_TOKEN` 至少 16 个字符，然后重新部署。
+检查 Variables and Secrets，确认 `ADMIN_TOKEN` 至少 8 个字符，然后重新部署。
 
 ### 后台一直提示管理密钥错误
 
