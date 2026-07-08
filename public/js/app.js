@@ -264,23 +264,74 @@ async function openDetail(item, sourceOverride = null) {
   const source = sourceOverride || { provider: item.provider, id: item.id, providerName: item.providerName };
   els.detailContent.innerHTML = '<div class="empty-state"><div class="empty-icon">C</div><p>正在加载详情…</p></div>';
   if (!els.detailDialog.open) els.detailDialog.showModal();
+
   try {
     const payload = await api.detail(source.provider, source.id);
     const detail = payload.item;
     const poster = safeImage(detail.pic);
+    const cover = safeImage(detail.backdrop || detail.tmdb?.backdrop || detail.pic);
     const lines = detail.lines || [];
-    const sourceButtons = (item.sources || []).map(candidate => `<button class="source-choice ${candidate.provider === detail.provider ? 'active' : ''}" data-provider="${escapeHtml(candidate.provider)}" data-id="${escapeHtml(candidate.id)}">${escapeHtml(candidate.providerName)}${candidate.latency ? ` · ${candidate.latency}ms` : ''}</button>`).join('');
-    els.detailContent.innerHTML = `<div class="detail-backdrop" ${detail.backdrop ? `style="background-image:url('${escapeHtml(detail.backdrop)}')"` : ''}></div><div class="detail-hero">
-      ${poster ? `<img class="detail-poster" referrerpolicy="no-referrer" src="${escapeHtml(poster)}" alt="${escapeHtml(detail.name)}">` : '<div class="detail-poster poster-fallback">C</div>'}
-      <div class="detail-copy"><span class="eyebrow">${escapeHtml(detail.providerName || 'SOURCE')}</span><h2>${escapeHtml(detail.name)}</h2>
-      <div class="detail-meta">${[detail.tmdb?.rating ? `★ ${Number(detail.tmdb.rating).toFixed(1)}` : '', detail.year, detail.type, detail.area, detail.lang, detail.douban?.rating ? `豆瓣 ${detail.douban.rating.toFixed(1)}` : ''].filter(Boolean).map(value => `<span>${escapeHtml(value)}</span>`).join('')}</div>
-      ${sourceButtons ? `<div class="source-choices">${sourceButtons}</div>` : ''}<p>${escapeHtml(detail.content || '暂无简介')}</p>${detail.director ? `<small>导演：${escapeHtml(detail.director)}</small>` : ''}${detail.actors ? `<small>演员：${escapeHtml(detail.actors)}</small>` : ''}</div></div>
-      ${lines.map((line, lineIndex) => `<div class="episode-block"><h3>${escapeHtml(line.name || `线路 ${lineIndex + 1}`)}</h3><div class="episodes">${line.episodes.map((episode, episodeIndex) => `<button class="episode" data-line="${lineIndex}" data-episode="${episodeIndex}">${escapeHtml(episode.name || `第 ${episodeIndex + 1} 集`)}${episode.proxied ? '<i>代理</i>' : ''}</button>`).join('')}</div></div>`).join('') || '<div class="episode-block"><p class="muted">此数据源没有返回可播放条目。</p></div>'}`;
+    const allEpisodes = lines.flatMap((line, lineIndex) =>
+      (line.episodes || []).map((episode, episodeIndex) => ({ episode, lineIndex, episodeIndex }))
+    );
+    const firstPlayable = allEpisodes[0];
+    const description = String(detail.content || '').trim();
+    const metaValues = [
+      detail.tmdb?.rating ? `★ ${Number(detail.tmdb.rating).toFixed(1)}` : '',
+      detail.douban?.rating ? `豆瓣 ${Number(detail.douban.rating).toFixed(1)}` : '',
+      detail.year,
+      detail.type,
+      detail.area,
+      detail.lang,
+    ].filter(Boolean);
+
+    const sourceButtons = (item.sources || []).map(candidate => `<button class="source-choice ${candidate.provider === detail.provider ? 'active' : ''}" data-provider="${escapeHtml(candidate.provider)}" data-id="${escapeHtml(candidate.id)}">${escapeHtml(candidate.providerName)}${candidate.latency ? `<small>${candidate.latency}ms</small>` : ''}</button>`).join('');
+
+    const credits = [
+      detail.director ? `<p><span>导演</span>${escapeHtml(detail.director)}</p>` : '',
+      detail.actors ? `<p><span>演员</span>${escapeHtml(detail.actors)}</p>` : '',
+    ].filter(Boolean).join('');
+
+    const lineHtml = lines.map((line, lineIndex) => {
+      const rawName = String(line.name || '').trim();
+      const lineName = lines.length === 1
+        ? '选集'
+        : (/m3u8|线路|line|source/i.test(rawName) ? `线路 ${lineIndex + 1}` : rawName || `线路 ${lineIndex + 1}`);
+      return `<section class="episode-block">
+        <div class="episode-heading"><h3>${escapeHtml(lineName)}</h3><span>${line.episodes.length} 集</span></div>
+        <div class="episodes">${line.episodes.map((episode, episodeIndex) => `<button class="episode" data-line="${lineIndex}" data-episode="${episodeIndex}">${escapeHtml(episode.name || `第${episodeIndex + 1}集`)}${episode.proxied ? '<i>代理</i>' : ''}</button>`).join('')}</div>
+      </section>`;
+    }).join('');
+
+    els.detailContent.innerHTML = `<section class="detail-masthead">
+      ${cover ? `<img class="detail-cover" referrerpolicy="no-referrer" src="${escapeHtml(cover)}" alt="">` : '<div class="detail-cover-fallback">C</div>'}
+      <div class="detail-masthead-shade"></div>
+    </section>
+    <div class="detail-main">
+      <div class="detail-title-row">
+        ${poster ? `<img class="detail-thumb" referrerpolicy="no-referrer" src="${escapeHtml(poster)}" alt="${escapeHtml(detail.name)}">` : ''}
+        <div class="detail-title-copy">
+          <h2>${escapeHtml(detail.name)}</h2>
+          <div class="detail-meta">${metaValues.map(value => `<span>${escapeHtml(value)}</span>`).join('')}</div>
+        </div>
+      </div>
+      ${firstPlayable ? `<button class="detail-primary-play" type="button" data-line="${firstPlayable.lineIndex}" data-episode="${firstPlayable.episodeIndex}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7V5Z" fill="currentColor"/></svg>播放${escapeHtml(firstPlayable.episode.name || '第1集')}</button>` : ''}
+      ${sourceButtons ? `<div class="detail-source-bar"><span>片源</span><div class="source-choices">${sourceButtons}</div></div>` : ''}
+      ${description ? `<div class="detail-overview-wrap"><p class="detail-overview ${description.length > 110 ? 'collapsed' : ''}">${escapeHtml(description)}</p>${description.length > 110 ? '<button class="detail-more" type="button">展开</button>' : ''}</div>` : ''}
+      ${credits ? `<details class="detail-credits"><summary>演职员与信息</summary>${credits}</details>` : ''}
+      ${lineHtml || '<div class="episode-block"><p class="muted">此数据源没有返回可播放条目。</p></div>'}
+    </div>`;
+
     els.detailContent.querySelectorAll('.source-choice').forEach(button => button.addEventListener('click', () => openDetail(item, { provider: button.dataset.provider, id: button.dataset.id })));
-    els.detailContent.querySelectorAll('.episode').forEach(button => button.addEventListener('click', () => {
-      const episode = lines[Number(button.dataset.line)].episodes[Number(button.dataset.episode)];
-      openPlayer(detail, episode);
+    els.detailContent.querySelectorAll('.episode, .detail-primary-play').forEach(button => button.addEventListener('click', () => {
+      const episode = lines[Number(button.dataset.line)]?.episodes?.[Number(button.dataset.episode)];
+      if (episode) openPlayer(detail, episode);
     }));
+    els.detailContent.querySelector('.detail-more')?.addEventListener('click', event => {
+      const overview = els.detailContent.querySelector('.detail-overview');
+      const collapsed = overview?.classList.toggle('collapsed');
+      event.currentTarget.textContent = collapsed ? '展开' : '收起';
+    });
   } catch (error) {
     els.detailContent.innerHTML = `<div class="empty-state"><div class="empty-icon">!</div><h3>详情加载失败</h3><p>${escapeHtml(error.message)}</p><button class="primary-button" id="retryDetail">重试</button></div>`;
     $('#retryDetail')?.addEventListener('click', () => openDetail(item, source));
