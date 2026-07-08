@@ -78,7 +78,7 @@ export function mediaAuthHeaders(session: Pick<MediaSession, 'token' | 'userId' 
     `Client="Cactus TV"`,
     `Device="Web"`,
     `DeviceId="${escapeAuth(session.deviceId)}"`,
-    'Version="0.5.0"',
+    'Version="0.6.0"',
   ];
   if (session.userId) parts.push(`UserId="${escapeAuth(session.userId)}"`);
   if (session.token) parts.push(`Token="${escapeAuth(session.token)}"`);
@@ -229,12 +229,16 @@ export function mapMediaItem(item: any) {
   const episodeLabel = isEpisode
     ? `${season ? `S${String(season).padStart(2, '0')}` : ''}${episode ? `E${String(episode).padStart(2, '0')}` : ''}`
     : '';
+  const isPlaylist = type === 'Playlist';
+  const isFolder = ['Folder', 'CollectionFolder', 'BoxSet', 'UserView'].includes(type);
   return {
     id: String(item?.Id || ''),
     name: String(item?.Name || '未命名'),
+    rawType: type,
+    mediaContainer: isPlaylist ? 'playlist' : isFolder ? 'folder' : '',
     originalName: String(item?.OriginalTitle || ''),
-    mediaType: isSeries || isEpisode ? 'tv' : 'movie',
-    type: isSeries ? '剧集' : isEpisode ? '单集' : type === 'Movie' ? '电影' : type || '视频',
+    mediaType: isPlaylist ? 'playlist' : isSeries || isEpisode ? 'tv' : type === 'Movie' ? 'movie' : 'other',
+    type: isPlaylist ? '播放列表' : isSeries ? '剧集' : isEpisode ? '单集' : type === 'Movie' ? '电影' : type || '视频',
     year: String(item?.ProductionYear || ''),
     overview: String(item?.Overview || ''),
     rating: Number(item?.CommunityRating || item?.CriticRating || 0),
