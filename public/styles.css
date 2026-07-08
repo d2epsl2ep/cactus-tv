@@ -1191,3 +1191,80 @@ footer { display: flex; justify-content: space-between; gap: 30px; width: calc(1
 .category-nav:not(.hidden) + .home-sections { margin-top: -12px; }
 .compact-view .category-nav { margin: 18px 0 16px; }
 .compact-view .category-nav:not(.hidden) ~ .content-section { padding-top: 18px; }
+
+/* v0.5.0 Turbo: low-end devices render only what is near the viewport. */
+.catalog-section {
+  content-visibility: auto;
+  contain: layout style;
+  contain-intrinsic-size: 300px;
+}
+.catalog-section.is-visible { content-visibility: visible; }
+.media-card {
+  content-visibility: auto;
+  contain: layout style;
+  contain-intrinsic-size: 180px 270px;
+}
+.poster img[data-src] { opacity: 0; }
+.poster img[src] { opacity: 1; }
+.episode-block {
+  content-visibility: auto;
+  contain: layout style;
+  contain-intrinsic-size: 260px;
+}
+.episode-more {
+  min-height: 38px;
+  margin-top: 12px;
+  padding: 0 15px;
+  border: 1px solid rgba(255,255,255,.16);
+  border-radius: 4px;
+  background: #202020;
+  color: #eee;
+  cursor: pointer;
+}
+
+/* A static backdrop is dramatically cheaper than dozens of live blur layers. */
+@media (orientation: landscape) and (min-width: 821px) and (max-width: 1600px) and (any-pointer: coarse) {
+  .poster-portrait-source::before { display: none !important; }
+  .poster-portrait-source { background: linear-gradient(135deg, #191919, #080808); }
+  .poster-portrait-source img,
+  .media-card:hover .poster-portrait-source img {
+    filter: none;
+    transform: none;
+  }
+}
+
+/* Automatic lightweight rendering profile for save-data, reduced-motion and weak CPUs/RAM. */
+.performance-lite { scroll-behavior: auto; }
+.performance-lite *,
+.performance-lite *::before,
+.performance-lite *::after { scroll-behavior: auto !important; }
+.performance-lite .hero-backdrop,
+.performance-lite .hero.poster-mode .hero-backdrop {
+  filter: none !important;
+  transform: none !important;
+}
+.performance-lite .hero-artwork::before,
+.performance-lite .poster-portrait-source::before { display: none !important; }
+.performance-lite :is(.hero-button-secondary,.badge,.rating,.favorite-button,.notice,.center-play,.nav-tabs,.category-chip,.next-episode-prompt),
+.performance-lite ::backdrop { backdrop-filter: none !important; }
+.performance-lite :is(.media-card,.poster img,.hero-button,.nav-tab,.filter-chip,.category-chip) { transition: none !important; }
+.performance-lite .media-card:hover {
+  transform: none !important;
+  box-shadow: none !important;
+}
+.performance-lite .skeleton { animation: none !important; background: #202020; }
+.performance-lite .topbar.scrolled { box-shadow: none; }
+.performance-lite .hero-vignette { background: linear-gradient(180deg, rgba(0,0,0,.05), transparent 46%, #090909 100%); }
+
+@media (max-width: 1024px), (hover: none) {
+  .catalog-section {
+    content-visibility: auto;
+    contain: layout style;
+    contain-intrinsic-size: 250px;
+  }
+  .catalog-section.is-visible { content-visibility: visible; }
+  .media-card {
+    content-visibility: auto;
+    contain: layout style;
+  }
+}
