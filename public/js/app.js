@@ -38,7 +38,7 @@ function safeImage(url) {
   try {
     const parsed = new URL(value);
     if (/(^|\.)doubanio\.com$/i.test(parsed.hostname)) {
-      return `/api/image?url=${encodeURIComponent(value)}`;
+      return `/api/image?rev=2&url=${encodeURIComponent(value)}`;
     }
   } catch {
     return '';
@@ -186,6 +186,16 @@ function bindCards(container, items, context) {
     const img = event.target;
     if (!(img instanceof HTMLImageElement)) return;
     const picture = img.closest('picture');
+
+    if (!img.dataset.retried && img.src.includes('/api/image')) {
+      img.dataset.retried = '1';
+      picture?.querySelectorAll('source').forEach(source => source.remove());
+      const retryUrl = new URL(img.src, location.origin);
+      retryUrl.searchParams.set('_retry', String(Date.now()));
+      img.src = retryUrl.toString();
+      return;
+    }
+
     const fallback = Object.assign(document.createElement('div'), {
       className: 'poster-fallback',
       textContent: img.dataset.fallback || 'C',
