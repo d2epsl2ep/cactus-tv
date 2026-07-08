@@ -1,1 +1,21 @@
-(()=>{const l="cactus-v3",c=`${l}-static`,o=`${l}-data`,p=["/","/index.html","/styles.css?v=0.3.0","/js/app.js?v=0.3.0","/js/api.js?v=0.3.0","/js/storage.js?v=0.3.0","/assets/cactus.svg"];self.addEventListener("install",t=>{t.waitUntil(caches.open(c).then(e=>e.addAll(p)).then(()=>self.skipWaiting()))});self.addEventListener("activate",t=>{t.waitUntil(caches.keys().then(e=>Promise.all(e.filter(a=>![c,o].includes(a)).map(a=>caches.delete(a)))).then(()=>self.clients.claim()))});async function r(t,e=c){const a=await caches.open(e),s=await a.match(t);if(s)return s;const n=await fetch(t);return n.ok&&a.put(t,n.clone()),n}async function m(t){const e=await caches.open(o),a=await e.match(t),s=fetch(t).then(n=>(n.ok&&e.put(t,n.clone()),n)).catch(()=>null);return a||await s||new Response(JSON.stringify({ok:!1,error:"\u7F51\u7EDC\u4E0D\u53EF\u7528"}),{status:503,headers:{"content-type":"application/json; charset=utf-8"}})}async function f(t){const e=await caches.open(c),a=new URL(t.url),s=a.pathname==="/admin.html"?"/admin.html":"/index.html",n=new AbortController,h=setTimeout(()=>n.abort(),3500);try{const i=await fetch(t,{signal:n.signal});return i.ok&&(a.pathname==="/"||a.pathname==="/index.html"||a.pathname==="/admin.html")&&e.put(s,i.clone()),i}catch{return await e.match(s)||Response.error()}finally{clearTimeout(h)}}self.addEventListener("fetch",t=>{const e=t.request;if(e.method!=="GET")return;const a=new URL(e.url);if(a.origin===self.location.origin){if(e.mode==="navigate"){t.respondWith(f(e));return}if(a.pathname==="/api/home"||a.pathname==="/api/health"){t.respondWith(m(e));return}if(a.pathname==="/api/image"){t.respondWith(r(e,o));return}(/^\/(?:js|assets|vendor)\//.test(a.pathname)||a.pathname==="/styles.css")&&t.respondWith(r(e))}});})();
+const CLEANUP_CACHE_PREFIXES = ['cactus-v3', 'cactus-v2', 'cactus-v1'];
+
+self.addEventListener('install', event => {
+  event.waitUntil(self.skipWaiting());
+});
+
+self.addEventListener('activate', event => {
+  event.waitUntil(
+    caches.keys()
+      .then(keys => Promise.all(
+        keys
+          .filter(key => CLEANUP_CACHE_PREFIXES.some(prefix => key.startsWith(prefix)))
+          .map(key => caches.delete(key))
+      ))
+      .then(() => self.clients.claim())
+  );
+});
+
+self.addEventListener('fetch', () => {
+  // Keep the old registration harmless. Requests now use the network and normal HTTP cache.
+});
