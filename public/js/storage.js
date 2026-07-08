@@ -61,19 +61,50 @@ function replaceHistory(list) {
   scheduleWrite(KEYS.history, state.history);
 }
 
-function healthEntry(provider) {
-  const id = String(provider || '').trim();
-  if (!id) return null;
-  return state.sourceHealth[id] || { successes: 0, failures: 0, lastSuccess: 0, lastFailure: 0 };
+function healthId(provider, resource = '') {
+  const base = String(provider || '').trim();
+  const detail = String(resource || '').trim();
+  if (!base) return '';
+  return detail ? `resource:${detail}` : `provider:${base}`;
 }
 
-function saveHealth(provider, patch) {
-  const id = String(provider || '').trim();
+function healthEntry(provider, resource = '') {
+  const id = healthId(provider, resource);
+  if (!id) return null;
+  const legacy = state.sourceHealth[provider];
+  return state.sourceHealth[id] || (!resource && legacy) || {
+    score: 0, successes: 0, failures: 0, lastSuccess: 0, lastFailure: 0, updatedAt: 0,
+  };
+}
+
+function decayedScore(entry, now = Date.now()) {
+  const updatedAt = Number(entry?.updatedAt || Math.max(entry?.lastSuccess || 0, entry?.lastFailure || 0));
+  const legacy = Number.isFinite(Number(entry?.score))
+    ? Number(entry.score)
+    : Number(entry?.successes || 0) * 2 - Number(entry?.failures || 0) * 3;
+  if (!updatedAt) return legacy;
+  const ageDays = Math.max(0, now - updatedAt) / 864e5;
+  return legacy * Math.exp(-ageDays / 14);
+}
+
+function saveHealth(provider, resource, success) {
+  const id = healthId(provider, resource);
   if (!id) return;
-  state.sourceHealth[id] = { ...healthEntry(id), ...patch };
+  const current = healthEntry(provider, resource);
+  const now = Date.now();
+  const nextScore = Math.max(-30, Math.min(30, decayedScore(current, now) + (success ? 2 : -3)));
+  state.sourceHealth[id] = {
+    ...current,
+    score: nextScore,
+    successes: Number(current.successes || 0) + (success ? 1 : 0),
+    failures: Number(current.failures || 0) + (success ? 0 : 1),
+    lastSuccess: success ? now : Number(current.lastSuccess || 0),
+    lastFailure: success ? Number(current.lastFailure || 0) : now,
+    updatedAt: now,
+  };
   const entries = Object.entries(state.sourceHealth)
-    .sort((a, b) => Math.max(b[1].lastSuccess || 0, b[1].lastFailure || 0) - Math.max(a[1].lastSuccess || 0, a[1].lastFailure || 0))
-    .slice(0, 80);
+    .sort((a, b) => Number(b[1].updatedAt || Math.max(b[1].lastSuccess || 0, b[1].lastFailure || 0)) - Number(a[1].updatedAt || Math.max(a[1].lastSuccess || 0, a[1].lastFailure || 0)))
+    .slice(0, 160);
   state.sourceHealth = Object.fromEntries(entries);
   scheduleWrite(KEYS.sourceHealth, state.sourceHealth);
 }
@@ -122,30 +153,19 @@ export const store = {
     scheduleWrite(KEYS.settings, state.settings);
   },
 
-  recordSourceSuccess(provider) {
-    const current = healthEntry(provider);
-    if (!current) return;
-    saveHealth(provider, {
-      successes: Number(current.successes || 0) + 1,
-      lastSuccess: Date.now(),
-    });
+  recordSourceSuccess(provider, resource = '') {
+    saveHealth(provider, '', true);
+    if (resource) saveHealth(provider, resource, true);
   },
-  recordSourceFailure(provider) {
-    const current = healthEntry(provider);
-    if (!current) return;
-    saveHealth(provider, {
-      failures: Number(current.failures || 0) + 1,
-      lastFailure: Date.now(),
-    });
+  recordSourceFailure(provider, resource = '') {
+    saveHealth(provider, '', false);
+    if (resource) saveHealth(provider, resource, false);
   },
-  sourceScore(provider) {
-    const entry = healthEntry(provider);
-    if (!entry) return 0;
-    const successes = Number(entry.successes || 0);
-    const failures = Number(entry.failures || 0);
-    const recentSuccess = Date.now() - Number(entry.lastSuccess || 0) < 7 * 864e5 ? 2 : 0;
-    const recentFailure = Date.now() - Number(entry.lastFailure || 0) < 24 * 36e5 ? 2 : 0;
-    return successes * 2 - failures * 3 + recentSuccess - recentFailure;
+  sourceScore(provider, resource = '') {
+    const providerScore = decayedScore(healthEntry(provider));
+    if (!resource) return providerScore;
+    const resourceScore = decayedScore(healthEntry(provider, resource));
+    return providerScore * 0.45 + resourceScore * 0.55;
   },
 
   flush,

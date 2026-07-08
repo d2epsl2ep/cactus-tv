@@ -1,5 +1,5 @@
-import { api } from './api.js?v=0.5.1';
-import { store } from './storage.js?v=0.5.1';
+import { api } from './api.js?v=0.6.0';
+import { store } from './storage.js?v=0.6.0';
 
 const $ = selector => document.querySelector(selector);
 const els = {
@@ -21,7 +21,26 @@ const els = {
   sourcePills: $('#sourcePills'), metadataCredit: $('#metadataCredit'), toast: $('#toast'),
 };
 
+function installDialogFallback(dialog) {
+  if (!dialog) return;
+  if (!('open' in dialog)) Object.defineProperty(dialog, 'open', { get: () => dialog.hasAttribute('open') });
+  if (typeof dialog.showModal !== 'function') {
+    dialog.showModal = () => { dialog.setAttribute('open', ''); dialog.classList.add('dialog-fallback-open'); };
+  }
+  if (typeof dialog.close !== 'function') {
+    dialog.close = () => {
+      const wasOpen = dialog.hasAttribute('open');
+      dialog.removeAttribute('open');
+      dialog.classList.remove('dialog-fallback-open');
+      if (wasOpen) dialog.dispatchEvent(new Event('close'));
+    };
+  }
+}
+[els.detailDialog, els.playerDialog, els.settingsDialog].forEach(installDialogFallback);
+
 const PAGE_SIZE = 24;
+const PLAYBACK_BUDGET_MS = 48_000;
+const PLAYBACK_MAX_ATTEMPTS = 7;
 let currentView = 'home';
 let settings = store.settings();
 let featuredItem = null;
@@ -91,8 +110,8 @@ async function ensurePlayerModules() {
   if (playerApi && playerUI) return playerApi;
   if (!playerModulesPromise) {
     playerModulesPromise = Promise.all([
-      import('./player.js?v=0.5.1'),
-      import('./player-ui.js?v=0.5.1'),
+      import('./player.js?v=0.6.0'),
+      import('./player-ui.js?v=0.6.0'),
     ]).then(([apiModule, uiModule]) => {
       playerApi = apiModule;
       playerUI = uiModule.createPlayerUI({
@@ -102,7 +121,10 @@ async function ensurePlayerModules() {
         message: els.playerMessage,
         retryButton: els.playerRetry,
         setQuality: apiModule.setPlaybackQuality,
+        setAudioTrack: apiModule.setPlaybackAudioTrack,
+        setSubtitleTrack: apiModule.setPlaybackSubtitleTrack,
       });
+      if (!deviceProfile.saveData) apiModule.preloadPlayerEngine().catch(() => {});
       return apiModule;
     }).catch(error => {
       playerModulesPromise = null;
@@ -116,6 +138,8 @@ async function playStream(...args) { return (await ensurePlayerModules()).playSt
 function stopStream(...args) { return playerApi?.stopStream(...args); }
 async function loadSubtitle(...args) { return (await ensurePlayerModules()).loadSubtitle(...args); }
 async function localSubtitle(...args) { return (await ensurePlayerModules()).localSubtitle(...args); }
+async function preloadStream(...args) { return (await ensurePlayerModules()).preloadStream(...args); }
+function clearSubtitleTracks(...args) { return playerApi?.clearSubtitleTracks(...args); }
 
 function escapeHtml(value = '') {
   return String(value).replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
@@ -693,6 +717,17 @@ function sortedSources(item, currentProvider = '') {
   });
 }
 
+function candidateHealthKey(candidate) {
+  if (!candidate) return '';
+  let host = '';
+  try {
+    const parsed = new URL(candidate.url, location.href);
+    const target = parsed.searchParams.get('url');
+    host = new URL(target || parsed.toString(), location.href).host;
+  } catch {}
+  return `${candidate.provider || ''}|${host}|${candidate.lineName || candidate.lineIndex || ''}`;
+}
+
 function episodeIdentity(name, index) {
   const text = String(name || '').normalize('NFKC').toLowerCase().trim();
   const match = text.match(/(?:第\s*)?(\d{1,4})(?:\s*[集话期]|\s*$)/) || text.match(/(?:ep(?:isode)?\s*)(\d{1,4})/i);
@@ -731,7 +766,12 @@ function candidatesForDetail(detail, target, preferred = {}) {
       url: fallbackEpisode.playbackUrl || fallbackEpisode.url, priority: 999,
     });
   }
-  return candidates.sort((a, b) => a.priority - b.priority);
+  return candidates.sort((a, b) => {
+    const preferred = a.priority - b.priority;
+    if (Math.abs(preferred) > 900) return preferred;
+    const health = store.sourceScore(b.provider, candidateHealthKey(b)) - store.sourceScore(a.provider, candidateHealthKey(a));
+    return health || preferred;
+  });
 }
 
 async function openDetail(item, sourceOverride = null, options = {}) {
@@ -864,30 +904,56 @@ function resetCandidatePool(playback, includeCurrent = false) {
   const current = playback.currentCandidate;
   playback.candidateQueue = candidatesForDetail(playback.baseDetail, playback.target, playback.preferred);
   if (includeCurrent && current) playback.candidateQueue.unshift(current);
+  playback.priorityQueue = [];
   playback.alternativeSources = sortedSources(playback.sourceItem, playback.baseDetail.provider)
     .filter(source => !(source.provider === playback.baseDetail.provider && String(source.id) === String(playback.baseDetail.id)));
   playback.alternativeCursor = 0;
+  playback.baseAttempts = 0;
   playback.attemptedUrls.clear();
+  playback.attemptCount = 0;
+  playback.failoverStartedAt = performance.now();
 }
 
 async function nextPlaybackCandidate(playback) {
   while (true) {
+    while (playback.priorityQueue.length) {
+      const candidate = playback.priorityQueue.shift();
+      if (!candidate?.url || playback.attemptedUrls.has(candidate.url)) continue;
+      return candidate;
+    }
+
+    if (playback.baseAttempts === 0) {
+      while (playback.candidateQueue.length) {
+        const candidate = playback.candidateQueue.shift();
+        if (!candidate?.url || playback.attemptedUrls.has(candidate.url)) continue;
+        playback.baseAttempts += 1;
+        return candidate;
+      }
+    }
+
+    const source = playback.alternativeSources[playback.alternativeCursor++];
+    if (source) {
+      try {
+        const payload = await api.detail(source.provider, source.id);
+        const detail = payload.item;
+        detail.canonicalKey = playback.canonicalKey;
+        const candidates = candidatesForDetail(detail, playback.target, {});
+        const [best, ...rest] = candidates;
+        if (best) playback.priorityQueue.push(best);
+        playback.candidateQueue.push(...rest);
+      } catch (error) {
+        store.recordSourceFailure(source.provider);
+        console.warn('备用片源详情加载失败', source.provider, error);
+      }
+      continue;
+    }
+
     while (playback.candidateQueue.length) {
       const candidate = playback.candidateQueue.shift();
       if (!candidate?.url || playback.attemptedUrls.has(candidate.url)) continue;
       return candidate;
     }
-    const source = playback.alternativeSources[playback.alternativeCursor++];
-    if (!source) return null;
-    try {
-      const payload = await api.detail(source.provider, source.id);
-      const detail = payload.item;
-      detail.canonicalKey = playback.canonicalKey;
-      playback.candidateQueue.push(...candidatesForDetail(detail, playback.target, {}));
-    } catch (error) {
-      store.recordSourceFailure(source.provider);
-      console.warn('备用片源详情加载失败', source.provider, error);
-    }
+    return null;
   }
 }
 
@@ -897,6 +963,7 @@ function setPlaybackStatus(message = '', state = '') {
 }
 
 function populateSubtitles(subtitles) {
+  clearSubtitleTracks(els.player);
   const list = Array.isArray(subtitles) ? subtitles : [];
   els.subtitleSelect.innerHTML = '<option value="">关闭</option>' + list.map((subtitle, index) => `<option value="${index}">${escapeHtml(subtitle.name)} · ${escapeHtml(subtitle.lang || '')}</option>`).join('');
   els.subtitleSelect._items = list;
@@ -939,6 +1006,8 @@ async function startCandidate(playback, candidate, startAt) {
   playback.episode = candidate.episode;
   playback.playUrl = candidate.url;
   playback.starting = true;
+  playback.successRecorded = false;
+  playback.lastStartupMs = 0;
   const rate = Number(els.player.playbackRate || 1);
   playerUI.reset();
   els.player.playbackRate = rate;
@@ -950,17 +1019,18 @@ async function startCandidate(playback, candidate, startAt) {
   const attemptNumber = playback.attemptedUrls.size + 1;
   setPlaybackStatus(attemptNumber > 1 ? `正在尝试备用线路：${candidate.providerName || candidate.provider} · ${candidate.lineName}` : `${candidate.providerName || candidate.provider} · ${candidate.lineName}`, attemptNumber > 1 ? 'switching' : '');
   playback.attemptedUrls.add(candidate.url);
+  playback.attemptCount += 1;
   try {
     await playStream(els.player, candidate.url, settings.preferNativeHls, startAt);
     if (playback.sequence !== playbackSequence) return;
     playback.starting = false;
     playback.lastSync = Date.now();
-    store.recordSourceSuccess(candidate.provider);
-    setPlaybackStatus(`${candidate.providerName || candidate.provider} · ${candidate.lineName}`, 'ready');
+    const startup = Number(playback.lastStartupMs || 0);
+    setPlaybackStatus(`${candidate.providerName || candidate.provider} · ${candidate.lineName}${startup ? ` · 首帧 ${startup}ms` : ''}`, 'ready');
     replaceWatchRoute(candidate, playback);
   } catch (error) {
     playback.starting = false;
-    store.recordSourceFailure(candidate.provider);
+    store.recordSourceFailure(candidate.provider, candidateHealthKey(candidate));
     throw error;
   }
 }
@@ -968,10 +1038,16 @@ async function startCandidate(playback, candidate, startAt) {
 async function attemptPlayback(startAt = 0, options = {}) {
   const playback = currentPlayback;
   if (!playback || playback.failureHandling || playback.sequence !== playbackSequence) return false;
+  if (options.resetBudget) {
+    playback.failoverStartedAt = performance.now();
+    playback.attemptCount = 0;
+  }
   playback.failureHandling = true;
   let lastError = options.reason || null;
   try {
     while (playback.sequence === playbackSequence && els.playerDialog.open) {
+      const elapsed = performance.now() - playback.failoverStartedAt;
+      if (elapsed > PLAYBACK_BUDGET_MS || playback.attemptCount >= PLAYBACK_MAX_ATTEMPTS) break;
       const candidate = await nextPlaybackCandidate(playback);
       if (!candidate) break;
       try {
@@ -984,8 +1060,8 @@ async function attemptPlayback(startAt = 0, options = {}) {
       }
     }
     const message = lastError?.message || '所有可用线路均播放失败';
-    setPlaybackStatus('没有可用的备用线路', '');
-    playerUI.showError(new Error(`${message}。已尝试当前影片的可用线路和片源。`));
+    setPlaybackStatus(`没有可用线路（已尝试 ${playback.attemptCount} 次）`, '');
+    playerUI.showError(new Error(`${message}。播放器已停止继续等待，请重试或手动切换。`));
     return false;
   } finally {
     playback.failureHandling = false;
@@ -1025,16 +1101,18 @@ async function openPlayer(detail, episode, options = {}) {
     episode,
     preferred: { lineIndex, episodeIndex },
     target: { name: episode.name || '', index: episodeIndex, identity: episodeIdentity(episode.name, episodeIndex) },
-    candidateQueue: [], alternativeSources: [], alternativeCursor: 0,
+    candidateQueue: [], priorityQueue: [], alternativeSources: [], alternativeCursor: 0,
     attemptedUrls: new Set(), currentCandidate: null,
     failureHandling: false, starting: false, lastSync: 0,
+    attemptCount: 0, baseAttempts: 0, failoverStartedAt: performance.now(),
+    successRecorded: false, prewarmedNext: '', lastStartupMs: 0,
   };
   resetCandidatePool(currentPlayback);
   playerUI.setRetry(() => {
     if (!currentPlayback) return;
     const retryAt = Number.isFinite(els.player.currentTime) ? els.player.currentTime : resumeAt;
     resetCandidatePool(currentPlayback, true);
-    attemptPlayback(retryAt, { forceFailover: true });
+    attemptPlayback(retryAt, { forceFailover: true, resetBudget: true });
   });
   requestAnimationFrame(() => playerUI.focus());
   if (options.push !== false) {
@@ -1075,6 +1153,16 @@ function relativeEpisode(delta) {
   const episode = episodes[nextIndex];
   if (!episode) return null;
   return { detail: candidate.detail, episode, lineIndex: candidate.lineIndex, episodeIndex: nextIndex };
+}
+
+async function prewarmNextEpisode() {
+  const playback = currentPlayback;
+  if (!playback || deviceProfile.saveData) return;
+  const target = relativeEpisode(1);
+  const url = target?.episode?.playbackUrl || target?.episode?.url || '';
+  if (!url || playback.prewarmedNext === url) return;
+  playback.prewarmedNext = url;
+  try { await preloadStream(url); } catch {}
 }
 
 function playRelativeEpisode(delta, options = {}) {
@@ -1311,7 +1399,7 @@ els.playerSwitchSource.addEventListener('click', () => {
   if (!currentPlayback) return;
   const position = Number.isFinite(els.player.currentTime) ? els.player.currentTime : 0;
   stopStream(els.player);
-  attemptPlayback(position, { forceFailover: true, reason: new Error('手动切换线路') });
+  attemptPlayback(position, { forceFailover: true, resetBudget: true, reason: new Error('手动切换线路') });
 });
 els.nextEpisodeNow.addEventListener('click', () => {
   cancelNextEpisode();
@@ -1320,19 +1408,40 @@ els.nextEpisodeNow.addEventListener('click', () => {
 els.nextEpisodeCancel.addEventListener('click', cancelNextEpisode);
 
 els.player.addEventListener('timeupdate', () => {
-  if (!currentPlayback || Date.now() - currentPlayback.lastSync < 15000) return;
-  currentPlayback.lastSync = Date.now();
-  saveHistory();
+  if (!currentPlayback) return;
+  if (Date.now() - currentPlayback.lastSync >= 15000) {
+    currentPlayback.lastSync = Date.now();
+    saveHistory();
+  }
+  const remaining = Number(els.player.duration || 0) - Number(els.player.currentTime || 0);
+  if (remaining > 0 && remaining < 90) prewarmNextEpisode();
 });
 els.player.addEventListener('ended', () => {
   saveHistory(els.player.duration || els.player.currentTime || 0, els.player.duration || 0);
   showNextEpisodePrompt();
 });
+els.player.addEventListener('cactus:verified', event => {
+  if (!currentPlayback?.currentCandidate) return;
+  const startup = Number(event.detail?.startupMs || 0);
+  currentPlayback.lastStartupMs = startup;
+  setPlaybackStatus(`${currentPlayback.currentCandidate.providerName || currentPlayback.currentCandidate.provider} · ${currentPlayback.currentCandidate.lineName}${startup ? ` · 首帧 ${startup}ms` : ''}`, 'ready');
+});
+els.player.addEventListener('cactus:stable', () => {
+  const playback = currentPlayback;
+  const candidate = playback?.currentCandidate;
+  if (!playback || !candidate || playback.successRecorded) return;
+  playback.successRecorded = true;
+  store.recordSourceSuccess(candidate.provider, candidateHealthKey(candidate));
+  prewarmNextEpisode();
+});
+
 els.player.addEventListener('cactus:error', event => {
   const playback = currentPlayback;
   if (!playback || playback.starting || playback.failureHandling || playback.sequence !== playbackSequence) return;
   const position = Number.isFinite(els.player.currentTime) ? els.player.currentTime : 0;
-  if (settings.autoFailover) attemptPlayback(position, { reason: event.detail.error });
+  const candidate = playback.currentCandidate;
+  if (candidate) store.recordSourceFailure(candidate.provider, candidateHealthKey(candidate));
+  if (settings.autoFailover) attemptPlayback(position, { reason: event.detail.error, resetBudget: true });
 });
 
 els.playerDialog.addEventListener('close', () => {
