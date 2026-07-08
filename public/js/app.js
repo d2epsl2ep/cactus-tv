@@ -97,7 +97,7 @@ function proxyImage(url, item = null) {
   try {
     const parsed = new URL(value);
     if (/(^|\.)doubanio\.com$/i.test(parsed.hostname)) {
-      const params = new URLSearchParams({ rev: '6', url: value });
+      const params = new URLSearchParams({ rev: '7', url: value });
       const doubanId = doubanIdOf(item);
       const title = String(item?.title || item?.name || item?.douban?.title || '').trim();
       if (doubanId) params.set('id', doubanId);
