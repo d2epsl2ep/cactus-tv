@@ -43,7 +43,7 @@ export const onRequestGet: PagesFunction<Env, any, AppData> = async ({ request }
   const cache = caches.default;
   const cacheUrl = new URL(requestUrl.origin + requestUrl.pathname);
   cacheUrl.searchParams.set('url', imageUrl.toString());
-  cacheUrl.searchParams.set('rev', '3');
+  cacheUrl.searchParams.set('rev', '4');
   const cacheKey = new Request(cacheUrl.toString(), { method: 'GET' });
   const cached = await cache.match(cacheKey);
   if (cached) return cached;
