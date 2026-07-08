@@ -1,4 +1,4 @@
-# Cactus TV v0.5.0 部署教程
+# Cactus TV v0.6.0 部署教程
 
 这份教程沿用项目原来的部署方式：
 
@@ -8,7 +8,7 @@ GitHub 仓库 → Cloudflare Pages Git 集成 → Pages Functions + D1
 
 不要使用 Cloudflare Pages 的直接上传，也不要把 `public` 文件夹单独上传。`functions` 必须和 `public` 一起放在仓库根目录，否则接口不会部署。
 
-> 只使用 Jellyfin / Emby 时，完成 Pages 部署后即可在前台“设置”中连接服务器，不需要 D1 和 `ADMIN_TOKEN`。只有使用兼容接口管理后台时，才需要继续配置 D1。
+> 只使用 Jellyfin / Emby 时，完成 Pages 部署后打开 `/admin.html#media` 连接服务器，不需要 D1 和 `ADMIN_TOKEN`。数据源、站点设置和在线字幕管理才需要继续配置 D1。
 
 ---
 
@@ -164,7 +164,7 @@ Root directory: /
 https://cactus-tv.pages.dev
 ```
 
-此时首页可能能打开，但接口还不能正常使用，因为 D1 和管理密钥还没有配置。
+此时首页和 Jellyfin / Emby 媒体连接已经可以使用。兼容接口、站点设置和在线字幕后台需要继续配置 D1 与管理密钥。
 
 ---
 
