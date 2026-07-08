@@ -229,10 +229,10 @@ async function playWithHls(session) {
     capLevelToPlayerSize: true,
     startLevel: -1,
     startFragPrefetch: false,
-    backBufferLength: constrained ? 12 : 30,
-    maxBufferLength: constrained ? 18 : mobile ? 28 : 40,
-    maxMaxBufferLength: constrained ? 30 : mobile ? 50 : 75,
-    maxBufferSize: constrained ? 24 * 1024 * 1024 : 52 * 1024 * 1024,
+    backBufferLength: constrained ? 8 : 24,
+    maxBufferLength: constrained ? 12 : mobile ? 22 : 36,
+    maxMaxBufferLength: constrained ? 24 : mobile ? 42 : 66,
+    maxBufferSize: constrained ? 16 * 1024 * 1024 : mobile ? 36 * 1024 * 1024 : 52 * 1024 * 1024,
     maxBufferHole: 0.5,
     highBufferWatchdogPeriod: 2,
     nudgeOffset: 0.1,
@@ -337,7 +337,7 @@ async function playStream(video, url, preferNativeHls = true, resumeAt = 0) {
   }
 
   const session = createSession(video, value, resumeAt);
-  video.preload = 'auto';
+  video.preload = 'metadata';
   bindMediaState(session);
   emit(video, 'state', { state: 'loading' });
 

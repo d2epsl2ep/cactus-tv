@@ -1,7 +1,5 @@
-import { api } from './api.js?v=0.4.0';
-import { store } from './storage.js?v=0.4.0';
-import { loadSubtitle, localSubtitle, playStream, stopStream } from './player.js?v=0.4.0';
-import { createPlayerUI } from './player-ui.js?v=0.4.0';
+import { api } from './api.js?v=0.5.0';
+import { store } from './storage.js?v=0.5.0';
 
 const $ = selector => document.querySelector(selector);
 const els = {
@@ -52,13 +50,68 @@ els.resumeToggle.checked = settings.resumePlayback;
 els.failoverToggle.checked = settings.autoFailover;
 els.autoNextToggle.checked = settings.autoNext;
 
-const playerUI = createPlayerUI({
-  dialog: els.playerDialog,
-  shell: els.playerShell,
-  video: els.player,
-  message: els.playerMessage,
-  retryButton: els.playerRetry,
+const deviceProfile = Object.freeze({
+  saveData: Boolean(navigator.connection?.saveData),
+  lowMemory: Boolean(navigator.deviceMemory && navigator.deviceMemory <= 4),
+  lowCpu: Boolean(navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4),
+  reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
+  coarsePointer: matchMedia('(pointer: coarse)').matches,
+  narrow: matchMedia('(max-width: 1024px)').matches,
 });
+const lowPowerMode = deviceProfile.saveData || deviceProfile.lowMemory || deviceProfile.lowCpu || deviceProfile.reducedMotion;
+document.documentElement.classList.toggle('performance-lite', lowPowerMode);
+document.documentElement.classList.toggle('touch-device', deviceProfile.coarsePointer);
+
+const PREFER_PORTRAIT_CARDS = deviceProfile.narrow;
+const HOME_INITIAL_CARDS = lowPowerMode ? 4 : 6;
+const HOME_BATCH_SIZE = lowPowerMode ? 4 : 8;
+const RESULT_BATCH_SIZE = lowPowerMode ? 18 : PAGE_SIZE;
+const IMAGE_ROOT_MARGIN = lowPowerMode ? '260px 180px' : '520px 360px';
+
+let playerApi = null;
+let playerUI = null;
+let playerModulesPromise = null;
+let homeSectionObserver = null;
+let imageObserver = null;
+let renderedResultCount = 0;
+let renderedResultItems = [];
+
+function idle(callback, timeout = 1200) {
+  if ('requestIdleCallback' in window) return requestIdleCallback(callback, { timeout });
+  return setTimeout(callback, lowPowerMode ? 90 : 35);
+}
+
+function scrollBehavior() { return lowPowerMode ? 'auto' : 'smooth'; }
+
+async function ensurePlayerModules() {
+  if (playerApi && playerUI) return playerApi;
+  if (!playerModulesPromise) {
+    playerModulesPromise = Promise.all([
+      import('./player.js?v=0.5.0'),
+      import('./player-ui.js?v=0.5.0'),
+    ]).then(([apiModule, uiModule]) => {
+      playerApi = apiModule;
+      playerUI = uiModule.createPlayerUI({
+        dialog: els.playerDialog,
+        shell: els.playerShell,
+        video: els.player,
+        message: els.playerMessage,
+        retryButton: els.playerRetry,
+        setQuality: apiModule.setPlaybackQuality,
+      });
+      return apiModule;
+    }).catch(error => {
+      playerModulesPromise = null;
+      throw error;
+    });
+  }
+  return playerModulesPromise;
+}
+
+async function playStream(...args) { return (await ensurePlayerModules()).playStream(...args); }
+function stopStream(...args) { return playerApi?.stopStream(...args); }
+async function loadSubtitle(...args) { return (await ensurePlayerModules()).loadSubtitle(...args); }
+async function localSubtitle(...args) { return (await ensurePlayerModules()).localSubtitle(...args); }
 
 function escapeHtml(value = '') {
   return String(value).replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
@@ -79,13 +132,13 @@ function doubanIdOf(item) {
   return candidates.map(value => String(value || '').trim()).find(value => /^\d{5,12}$/.test(value)) || '';
 }
 
-function proxyImage(url, item = null) {
+function proxyImage(url, item = null, size = 'card') {
   const value = safeImage(url);
   if (!value) return '';
   try {
     const parsed = new URL(value);
     if (!/(^|\.)doubanio\.com$/i.test(parsed.hostname)) return '';
-    const params = new URLSearchParams({ rev: '14', url: value });
+    const params = new URLSearchParams({ rev: '15', url: value, size });
     const doubanId = doubanIdOf(item);
     const kind = item?.mediaType === 'movie' ? 'movie' : item?.mediaType === 'tv' ? 'tv' : '';
     if (doubanId) params.set('id', doubanId);
@@ -94,17 +147,46 @@ function proxyImage(url, item = null) {
   } catch { return ''; }
 }
 
-function displayImage(url, item = null) {
+function displayImage(url, item = null, size = 'card') {
   const value = safeImage(url);
-  return proxyImage(value, item) || value;
+  return proxyImage(value, item, size) || value;
 }
 
-function imageAttributes(url, fallback = '', item = null) {
+function imageAttributes(url, fallback = '', item = null, options = {}) {
+  const { priority = false, size = 'card' } = options;
   const original = safeImage(url);
-  const proxy = proxyImage(original, item);
+  const proxy = proxyImage(original, item, size);
   const src = proxy || original;
   if (!src) return '';
-  return `src="${escapeHtml(src)}"${proxy ? ` data-proxy-src="${escapeHtml(proxy)}" data-original-src="${escapeHtml(original)}"` : ''}${fallback ? ` data-fallback="${escapeHtml(fallback)}"` : ''}`;
+  const sourceAttribute = priority ? `src="${escapeHtml(src)}"` : `data-src="${escapeHtml(src)}"`;
+  return `${sourceAttribute}${proxy ? ` data-proxy-src="${escapeHtml(proxy)}" data-original-src="${escapeHtml(original)}"` : ''}${fallback ? ` data-fallback="${escapeHtml(fallback)}"` : ''}`;
+}
+
+function activateImage(img) {
+  if (!(img instanceof HTMLImageElement)) return;
+  const src = img.dataset.src;
+  if (!src) return;
+  delete img.dataset.src;
+  img.src = src;
+}
+
+function hydrateImages(container = document) {
+  const images = container.querySelectorAll?.('img[data-src]') || [];
+  if (!images.length) return;
+  if (!('IntersectionObserver' in window)) {
+    images.forEach(activateImage);
+    return;
+  }
+  if (!imageObserver) {
+    imageObserver = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        imageObserver.unobserve(entry.target);
+        activateImage(entry.target);
+      }
+    }, { rootMargin: IMAGE_ROOT_MARGIN, threshold: 0.01 });
+  }
+  images.forEach(image => imageObserver.observe(image));
 }
 
 function tryNextImageSource(img) {
@@ -183,7 +265,7 @@ function setLoading(loading) {
   els.mediaGrid.classList.toggle('hidden', loading);
   els.loadMoreButton.classList.add('hidden');
   if (loading) {
-    els.skeletons.innerHTML = Array.from({ length: 12 }, () => '<div class="skeleton"></div>').join('');
+    els.skeletons.innerHTML = Array.from({ length: lowPowerMode ? 6 : 10 }, () => '<div class="skeleton"></div>').join('');
     els.emptyState.classList.add('hidden');
   }
 }
@@ -214,8 +296,8 @@ function renderHero(item) {
     return;
   }
 
-  const backdrop = displayImage(item.backdrop || item.tmdb?.backdrop, item);
-  const poster = displayImage(item.poster || item.pic || item.tmdb?.poster, item);
+  const backdrop = displayImage(item.backdrop || item.tmdb?.backdrop, item, 'hero');
+  const poster = displayImage(item.poster || item.pic || item.tmdb?.poster, item, 'hero');
   const heroImage = backdrop || poster;
   els.heroBackdrop.style.backgroundImage = heroImage
     ? `url("${heroImage.replace(/["\\]/g, '\\$&')}")`
@@ -225,7 +307,7 @@ function renderHero(item) {
     els.hero.classList.add('poster-mode');
     const original = safeImage(item.poster || item.pic || item.tmdb?.poster);
     els.heroArtwork.src = poster;
-    els.heroArtwork.dataset.proxySrc = proxyImage(original, item);
+    els.heroArtwork.dataset.proxySrc = proxyImage(original, item, 'hero');
     els.heroArtwork.dataset.originalSrc = original;
     els.heroArtwork.alt = titleOf(item);
   }
@@ -238,14 +320,13 @@ function renderHero(item) {
   els.heroOverview.textContent = item.overview || item.tmdb?.overview || '';
 }
 
-function cardHtml(item, index, context = 'results') {
+function cardHtml(item, index, context = 'results', priority = false) {
   const name = titleOf(item);
   const explicitBackdropSource = item.backdrop || item.tmdb?.backdrop || '';
   const portraitSource = item.pic || item.poster || item.tmdb?.poster || explicitBackdropSource;
   const explicitBackdrop = safeImage(explicitBackdropSource);
   const portraitVisual = safeImage(portraitSource);
-  const preferPortrait = matchMedia('(max-width: 1024px)').matches;
-  const visualSource = preferPortrait ? (portraitSource || explicitBackdropSource) : (explicitBackdropSource || portraitSource);
+  const visualSource = PREFER_PORTRAIT_CARDS ? (portraitSource || explicitBackdropSource) : (explicitBackdropSource || portraitSource);
   const visual = safeImage(visualSource);
   const portraitOnly = !explicitBackdrop && Boolean(portraitVisual);
   const key = keyOf(item);
@@ -255,15 +336,12 @@ function cardHtml(item, index, context = 'results') {
   const type = item.type || (item.mediaType === 'tv' ? '剧集' : item.mediaType === 'movie' ? '电影' : item.providerName || '');
   const primaryMeta = rating ? `★ ${rating.toFixed(1)}` : item.sourceCount > 1 ? `${item.sourceCount} 个片源` : '';
   const fallback = name.trim().slice(0, 1).toUpperCase() || 'C';
-  const eager = context === 'home' && index < 6;
   const image = visual
-    ? `<img loading="${eager ? 'eager' : 'lazy'}" decoding="async" fetchpriority="${eager && index < 2 ? 'auto' : 'low'}" referrerpolicy="no-referrer" ${imageAttributes(visualSource, fallback, item)} alt="${escapeHtml(name)}">`
+    ? `<img loading="${priority ? 'eager' : 'lazy'}" decoding="async" fetchpriority="${priority ? 'high' : 'low'}" referrerpolicy="no-referrer" ${imageAttributes(visualSource, fallback, item, { priority, size: 'card' })} alt="${escapeHtml(name)}">`
     : `<div class="poster-fallback">${escapeHtml(fallback)}</div>`;
-  const ambientImage = displayImage(visualSource, item);
-  const posterStyle = portraitOnly && ambientImage ? ` style="--poster-ambient:url(&quot;${escapeHtml(ambientImage)}&quot;)"` : '';
 
   return `<article class="media-card" tabindex="0" role="button" aria-label="查看 ${escapeHtml(name)}" data-index="${index}" data-context="${context}">
-    <div class="poster${portraitOnly ? ' poster-portrait-source' : ''}"${posterStyle}>${image}
+    <div class="poster${portraitOnly ? ' poster-portrait-source' : ''}">${image}
       ${item.remarks ? `<span class="badge">${escapeHtml(item.remarks)}</span>` : rating ? `<span class="rating">★ ${rating.toFixed(1)}</span>` : ''}
       ${canFavorite ? `<button type="button" class="favorite-button ${favorite ? 'active' : ''}" data-favorite="${escapeHtml(key)}" aria-label="${favorite ? '取消收藏' : '收藏'}">${favorite ? '♥' : '+'}</button>` : ''}
       <div class="card-overlay"><strong>${escapeHtml(name)}</strong><div class="card-meta">${primaryMeta ? `<span class="match">${escapeHtml(primaryMeta)}</span>` : ''}${item.year ? `<span>${escapeHtml(item.year)}</span>` : ''}${type ? `<span>${escapeHtml(type)}</span>` : ''}</div></div>
@@ -345,24 +423,42 @@ function buildResultFilters() {
 
   els.resultFilters.querySelectorAll('[data-filter-group="kind"] .filter-chip').forEach(button => button.addEventListener('click', () => {
     resultFilters.kind = button.dataset.value;
-    visibleResultCount = PAGE_SIZE;
+    visibleResultCount = RESULT_BATCH_SIZE;
     buildResultFilters();
-    renderResultBatch();
+    renderResultBatch({ reset: true });
   }));
   els.resultFilters.querySelectorAll('[data-filter-select]').forEach(select => select.addEventListener('change', () => {
     resultFilters[select.dataset.filterSelect] = select.value;
-    visibleResultCount = PAGE_SIZE;
-    renderResultBatch();
+    visibleResultCount = RESULT_BATCH_SIZE;
+    renderResultBatch({ reset: true });
   }));
 }
 
-function renderResultBatch() {
+function renderResultBatch({ reset = false } = {}) {
   const list = filteredResults();
   const visible = list.slice(0, visibleResultCount);
+  const listChanged = renderedResultItems.length !== list.length
+    || renderedResultItems.some((item, index) => keyOf(item) !== keyOf(list[index]));
+  if (reset || listChanged || renderedResultCount > visible.length) {
+    imageObserver?.disconnect();
+    els.mediaGrid.replaceChildren();
+    renderedResultCount = 0;
+    renderedResultItems = list;
+  }
+
+  if (renderedResultCount < visible.length) {
+    const html = visible.slice(renderedResultCount).map((item, offset) => {
+      const index = renderedResultCount + offset;
+      return cardHtml(item, index, currentResultContext, index < 3);
+    }).join('');
+    els.mediaGrid.insertAdjacentHTML('beforeend', html);
+    renderedResultCount = visible.length;
+    hydrateImages(els.mediaGrid);
+  }
+
   els.resultCount.textContent = list.length ? `${list.length} 个结果` : '';
   els.emptyState.classList.toggle('hidden', list.length > 0);
-  els.mediaGrid.innerHTML = visible.map((item, index) => cardHtml(item, index, currentResultContext)).join('');
-  bindCards(els.mediaGrid, visible, currentResultContext);
+  bindCards(els.mediaGrid, list, currentResultContext);
   els.loadMoreButton.classList.toggle('hidden', visible.length >= list.length);
   els.loadMoreButton.textContent = `显示更多（${visible.length}/${list.length}）`;
 }
@@ -372,7 +468,7 @@ function render(items, title, kicker, options = {}) {
   currentResultTitle = title;
   currentResultKicker = kicker;
   currentResultContext = options.context || 'results';
-  visibleResultCount = PAGE_SIZE;
+  visibleResultCount = RESULT_BATCH_SIZE;
   resultFilters = { kind: 'all', year: 'all', source: 'all' };
   setCompactView(true);
   els.categoryNav.classList.add('hidden');
@@ -382,7 +478,7 @@ function render(items, title, kicker, options = {}) {
   els.sectionKicker.textContent = kicker;
   if (options.filters === false) els.resultFilters.classList.add('hidden');
   else buildResultFilters();
-  renderResultBatch();
+  renderResultBatch({ reset: true });
 }
 
 function renderCategoryNav(activeId = '') {
@@ -399,6 +495,26 @@ function renderCategoryNav(activeId = '') {
   }));
 }
 
+function appendHomeCards(row, sectionIndex, amount = HOME_BATCH_SIZE) {
+  const section = homeSectionsData[sectionIndex];
+  const items = section?.items || [];
+  const start = Number(row.dataset.rendered || 0);
+  if (start >= items.length) return false;
+  const end = Math.min(items.length, start + amount);
+  row.insertAdjacentHTML('beforeend', items.slice(start, end).map((item, offset) => {
+    const index = start + offset;
+    return cardHtml(item, index, 'home', sectionIndex === 0 && index < 3);
+  }).join(''));
+  row.dataset.rendered = String(end);
+  hydrateImages(row);
+  return end < items.length;
+}
+
+function fillHomeRowNearEnd(row, sectionIndex) {
+  if (row.scrollLeft + row.clientWidth < row.scrollWidth - Math.max(220, row.clientWidth * .7)) return;
+  appendHomeCards(row, sectionIndex);
+}
+
 function renderHome(sections) {
   homeSectionsData = Array.isArray(sections) ? sections : [];
   currentView = 'home';
@@ -407,23 +523,59 @@ function renderHome(sections) {
   els.resultsSection.classList.add('hidden');
   els.homeSections.classList.remove('hidden');
   renderCategoryNav('');
+  homeSectionObserver?.disconnect();
+  imageObserver?.disconnect();
   if (!homeSectionsData.length) {
     renderHero(null);
     els.homeSections.innerHTML = '<div class="empty-state"><div class="empty-icon">C</div><h3>首页暂无内容</h3><p>可以直接使用上方搜索。</p></div>';
     return;
   }
+
   const firstSection = homeSectionsData.find(section => section.items?.length);
   renderHero(firstSection?.items?.[0]);
-  els.homeSections.innerHTML = homeSectionsData.map((section, sectionIndex) => `<section class="catalog-section">
+  els.homeSections.innerHTML = homeSectionsData.map((section, sectionIndex) => `<section class="catalog-section${sectionIndex === 0 ? ' is-visible' : ''}" data-catalog="${sectionIndex}">
     <div class="section-heading"><h2>${escapeHtml(section.title)}</h2>
       <div class="row-controls" aria-label="滚动片单"><button type="button" class="row-control" data-row="${sectionIndex}" data-dir="-1" aria-label="向左">‹</button><button type="button" class="row-control" data-row="${sectionIndex}" data-dir="1" aria-label="向右">›</button></div>
     </div>
-    <div class="media-row" data-section="${sectionIndex}">${(section.items || []).map((item, index) => cardHtml(item, index, 'home')).join('')}</div>
+    <div class="media-row" data-section="${sectionIndex}" data-rendered="0"></div>
   </section>`).join('');
-  homeSectionsData.forEach((section, index) => bindCards(els.homeSections.querySelector(`[data-section="${index}"]`), section.items || [], 'home'));
+
+  homeSectionsData.forEach((section, index) => {
+    const row = els.homeSections.querySelector(`[data-section="${index}"]`);
+    appendHomeCards(row, index, index === 0 ? HOME_INITIAL_CARDS + 2 : HOME_INITIAL_CARDS);
+    bindCards(row, section.items || [], 'home');
+    let rowFrame = 0;
+    row.addEventListener('scroll', () => {
+      if (rowFrame) return;
+      rowFrame = requestAnimationFrame(() => {
+        fillHomeRowNearEnd(row, index);
+        rowFrame = 0;
+      });
+    }, { passive: true });
+  });
+
+  if ('IntersectionObserver' in window) {
+    homeSectionObserver = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const sectionIndex = Number(entry.target.dataset.catalog);
+        entry.target.classList.add('is-visible');
+        const row = entry.target.querySelector('.media-row');
+        if (row) appendHomeCards(row, sectionIndex, HOME_BATCH_SIZE);
+        homeSectionObserver.unobserve(entry.target);
+      }
+    }, { rootMargin: lowPowerMode ? '220px 0px' : '520px 0px', threshold: 0.01 });
+    els.homeSections.querySelectorAll('.catalog-section:not(:first-child)').forEach(section => homeSectionObserver.observe(section));
+  } else {
+    els.homeSections.querySelectorAll('.catalog-section').forEach(section => section.classList.add('is-visible'));
+  }
+
   els.homeSections.querySelectorAll('.row-control').forEach(button => button.addEventListener('click', () => {
-    const row = els.homeSections.querySelector(`[data-section="${button.dataset.row}"]`);
-    row?.scrollBy({ left: Number(button.dataset.dir) * Math.max(row.clientWidth * .82, 320), behavior: 'smooth' });
+    const sectionIndex = Number(button.dataset.row);
+    const row = els.homeSections.querySelector(`[data-section="${sectionIndex}"]`);
+    if (!row) return;
+    appendHomeCards(row, sectionIndex, HOME_BATCH_SIZE);
+    row.scrollBy({ left: Number(button.dataset.dir) * Math.max(row.clientWidth * .82, 320), behavior: scrollBehavior() });
   }));
 }
 
@@ -473,7 +625,7 @@ async function search(query, options = {}) {
   els.categoryNav.classList.add('hidden');
   els.resultsSection.classList.remove('hidden');
   els.homeSections.classList.add('hidden');
-  if (options.scroll !== false) window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (options.scroll !== false) window.scrollTo({ top: 0, behavior: scrollBehavior() });
   try {
     const payload = await api.search(value, controller.signal);
     if (sequence !== searchSequence) return;
@@ -572,6 +724,13 @@ async function openDetail(item, sourceOverride = null, options = {}) {
   }
 }
 
+function episodeButtonsHtml(line, lineIndex, start, end, preferredLine, preferredEpisode) {
+  return (line.episodes || []).slice(start, end).map((episode, offset) => {
+    const episodeIndex = start + offset;
+    return `<button class="episode ${lineIndex === preferredLine && episodeIndex === preferredEpisode ? 'is-current' : ''}" data-line="${lineIndex}" data-episode="${episodeIndex}">${escapeHtml(episode.name || `第${episodeIndex + 1}集`)}${episode.proxied ? '<i>代理</i>' : ''}</button>`;
+  }).join('');
+}
+
 function renderDetail(item, detail) {
   const poster = safeImage(detail.pic);
   const cover = safeImage(detail.backdrop || detail.tmdb?.backdrop || detail.pic);
@@ -593,22 +752,25 @@ function renderDetail(item, detail) {
     detail.director ? `<p><span>导演</span>${escapeHtml(detail.director)}</p>` : '',
     detail.actors ? `<p><span>演员</span>${escapeHtml(detail.actors)}</p>` : '',
   ].filter(Boolean).join('');
+  const episodeChunk = lowPowerMode ? 36 : 72;
   const lineHtml = lines.map((line, lineIndex) => {
     const rawName = String(line.name || '').trim();
     const lineName = lines.length === 1 ? '选集' : (/m3u8|线路|line|source/i.test(rawName) ? `线路 ${lineIndex + 1}` : rawName || `线路 ${lineIndex + 1}`);
-    return `<section class="episode-block">
+    const initialEnd = Math.min(line.episodes.length, episodeChunk);
+    return `<section class="episode-block" data-episode-block="${lineIndex}" data-rendered="${initialEnd}" data-chunk="${episodeChunk}">
       <div class="episode-heading"><h3>${escapeHtml(lineName)}</h3><span>${line.episodes.length} 集</span></div>
-      <div class="episodes">${line.episodes.map((episode, episodeIndex) => `<button class="episode ${lineIndex === preferredLine && episodeIndex === preferredEpisode ? 'is-current' : ''}" data-line="${lineIndex}" data-episode="${episodeIndex}">${escapeHtml(episode.name || `第${episodeIndex + 1}集`)}${episode.proxied ? '<i>代理</i>' : ''}</button>`).join('')}</div>
+      <div class="episodes">${episodeButtonsHtml(line, lineIndex, 0, initialEnd, preferredLine, preferredEpisode)}</div>
+      ${initialEnd < line.episodes.length ? `<button class="episode-more" type="button" data-more-line="${lineIndex}">显示更多（${initialEnd}/${line.episodes.length}）</button>` : ''}
     </section>`;
   }).join('');
 
   els.detailContent.innerHTML = `<section class="detail-masthead">
-    ${cover ? `<img class="detail-cover" referrerpolicy="no-referrer" ${imageAttributes(detail.backdrop || detail.tmdb?.backdrop || detail.pic, 'C', detail)} alt="">` : '<div class="detail-cover-fallback">C</div>'}
+    ${cover ? `<img class="detail-cover" loading="eager" decoding="async" fetchpriority="high" referrerpolicy="no-referrer" ${imageAttributes(detail.backdrop || detail.tmdb?.backdrop || detail.pic, 'C', detail, { priority: true, size: 'hero' })} alt="">` : '<div class="detail-cover-fallback">C</div>'}
     <div class="detail-masthead-shade"></div>
   </section>
   <div class="detail-main">
     <div class="detail-title-row">
-      ${poster ? `<img class="detail-thumb" referrerpolicy="no-referrer" ${imageAttributes(detail.pic, 'C', detail)} alt="${escapeHtml(detail.name)}">` : ''}
+      ${poster ? `<img class="detail-thumb" loading="lazy" decoding="async" referrerpolicy="no-referrer" ${imageAttributes(detail.pic, 'C', detail, { priority: false, size: 'detail' })} alt="${escapeHtml(detail.name)}">` : ''}
       <div class="detail-title-copy"><h2>${escapeHtml(detail.name)}</h2><div class="detail-meta">${metaValues.map(value => `<span>${escapeHtml(value)}</span>`).join('')}</div></div>
     </div>
     ${firstPlayable ? `<button class="detail-primary-play" type="button" data-line="${firstPlayable.lineIndex}" data-episode="${firstPlayable.episodeIndex}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7V5Z" fill="currentColor"/></svg>${historyItem?.position > 5 ? `继续播放 ${formatTime(historyItem.position)}` : `播放${escapeHtml(firstPlayable.episode.name || '第1集')}`}</button>` : ''}
@@ -618,20 +780,45 @@ function renderDetail(item, detail) {
     ${lineHtml || '<div class="episode-block"><p class="muted">此数据源没有返回可播放条目。</p></div>'}
   </div>`;
 
-  els.detailContent.querySelectorAll('.source-choice').forEach(button => button.addEventListener('click', () => {
-    openDetail(item, { provider: button.dataset.provider, id: button.dataset.id }, { push: true });
-  }));
-  els.detailContent.querySelectorAll('.episode, .detail-primary-play').forEach(button => button.addEventListener('click', () => {
-    const lineIndex = Number(button.dataset.line);
-    const episodeIndex = Number(button.dataset.episode);
-    const episode = lines[lineIndex]?.episodes?.[episodeIndex];
-    if (episode) openPlayer(detail, episode, { item, lineIndex, episodeIndex, push: true });
-  }));
-  els.detailContent.querySelector('.detail-more')?.addEventListener('click', event => {
-    const overview = els.detailContent.querySelector('.detail-overview');
-    const collapsed = overview?.classList.toggle('collapsed');
-    event.currentTarget.textContent = collapsed ? '展开' : '收起';
-  });
+  hydrateImages(els.detailContent);
+  els.detailContent.onclick = event => {
+    const sourceButton = event.target.closest?.('.source-choice');
+    if (sourceButton) {
+      openDetail(item, { provider: sourceButton.dataset.provider, id: sourceButton.dataset.id }, { push: true });
+      return;
+    }
+    const moreButton = event.target.closest?.('[data-more-line]');
+    if (moreButton) {
+      const lineIndex = Number(moreButton.dataset.moreLine);
+      const block = moreButton.closest('[data-episode-block]');
+      const line = lines[lineIndex];
+      const start = Number(block.dataset.rendered || 0);
+      const end = Math.min(line.episodes.length, start + Number(block.dataset.chunk || episodeChunk));
+      block.querySelector('.episodes')?.insertAdjacentHTML('beforeend', episodeButtonsHtml(line, lineIndex, start, end, preferredLine, preferredEpisode));
+      block.dataset.rendered = String(end);
+      if (end >= line.episodes.length) moreButton.remove();
+      else moreButton.textContent = `显示更多（${end}/${line.episodes.length}）`;
+      return;
+    }
+    const playButton = event.target.closest?.('.episode, .detail-primary-play');
+    if (playButton) {
+      const lineIndex = Number(playButton.dataset.line);
+      const episodeIndex = Number(playButton.dataset.episode);
+      const episode = lines[lineIndex]?.episodes?.[episodeIndex];
+      if (episode) openPlayer(detail, episode, { item, lineIndex, episodeIndex, push: true });
+      return;
+    }
+    const moreOverview = event.target.closest?.('.detail-more');
+    if (moreOverview) {
+      const overview = els.detailContent.querySelector('.detail-overview');
+      const collapsed = overview?.classList.toggle('collapsed');
+      moreOverview.textContent = collapsed ? '展开' : '收起';
+    }
+  };
+  els.detailContent.onpointerdown = event => {
+    if (event.target.closest?.('.episode, .detail-primary-play')) ensurePlayerModules().catch(() => {});
+  };
+  if (!lowPowerMode && !deviceProfile.saveData) idle(() => ensurePlayerModules().catch(() => {}), 1800);
 }
 
 function resetCandidatePool(playback, includeCurrent = false) {
@@ -695,7 +882,7 @@ function mediaSessionFor(candidate) {
     navigator.mediaSession.metadata = new MediaMetadata({
       title: candidate.detail.name || 'Cactus TV',
       artist: candidate.episode.name || '',
-      artwork: candidate.detail.pic ? [{ src: displayImage(candidate.detail.pic, candidate.detail) }] : [],
+      artwork: candidate.detail.pic ? [{ src: displayImage(candidate.detail.pic, candidate.detail, 'detail') }] : [],
     });
     navigator.mediaSession.setActionHandler('play', () => els.player.play());
     navigator.mediaSession.setActionHandler('pause', () => els.player.pause());
@@ -781,6 +968,13 @@ async function openPlayer(detail, episode, options = {}) {
   const resumeAt = options.resumeAt ?? (settings.resumePlayback && sameEpisode ? Number(historyItem.position || 0) : 0);
   els.resumeHint.textContent = resumeAt > 5 ? `将从 ${formatTime(resumeAt)} 继续` : '';
   if (!els.playerDialog.open) els.playerDialog.showModal();
+  try {
+    await ensurePlayerModules();
+  } catch (error) {
+    els.playerDialog.close();
+    throw new Error(`播放器组件加载失败：${error?.message || '请刷新后重试'}`);
+  }
+  if (sequence !== playbackSequence || !els.playerDialog.open) return;
 
   currentPlayback = {
     sequence,
@@ -893,7 +1087,7 @@ function renderSavedView(view, options = {}) {
   const list = view === 'favorites' ? store.favorites() : store.history();
   render(list, view === 'favorites' ? '我的片单' : '继续观看', 'SAVED ON THIS DEVICE', { context: 'saved', filters: true });
   if (options.push !== false) navigate(`/${view}`, { apply: false, state: { view } });
-  if (options.scroll !== false) window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (options.scroll !== false) window.scrollTo({ top: 0, behavior: scrollBehavior() });
 }
 
 function openSearch() {
@@ -964,7 +1158,7 @@ async function applyRoute() {
       cancelPendingSearch();
       if (homeSectionsData.length) renderHome(homeSectionsData);
       else await loadHome({ render: true });
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+      window.scrollTo({ top: 0, behavior: scrollBehavior() });
     } else if (route.type === 'search') {
       if (route.query) {
         els.searchInput.value = route.query;
@@ -998,7 +1192,7 @@ async function applyRoute() {
 }
 
 els.loadMoreButton.addEventListener('click', () => {
-  visibleResultCount += PAGE_SIZE;
+  visibleResultCount += RESULT_BATCH_SIZE;
   renderResultBatch();
 });
 
@@ -1020,7 +1214,7 @@ els.heroPlayButton.addEventListener('click', () => {
     search(query);
   } else openSearch();
 });
-els.heroInfoButton.addEventListener('click', () => els.homeSections.querySelector('.catalog-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+els.heroInfoButton.addEventListener('click', () => els.homeSections.querySelector('.catalog-section')?.scrollIntoView({ behavior: scrollBehavior(), block: 'start' }));
 
 document.querySelectorAll('.nav-tab').forEach(tab => tab.addEventListener('click', () => {
   const view = tab.dataset.view;
@@ -1106,7 +1300,7 @@ els.playerDialog.addEventListener('close', () => {
   playbackSequence += 1;
   cancelNextEpisode();
   saveHistory();
-  playerUI.setRetry(null);
+  playerUI?.setRetry(null);
   stopStream(els.player);
   currentPlayback = null;
   setPlaybackStatus('');
@@ -1134,9 +1328,7 @@ window.addEventListener('unhandledrejection', event => {
   toast(event.reason?.message || '页面发生未处理错误', 'error');
 });
 
-(async function init() {
-  renderHero(null);
-  if (!history.state?.cactus) history.replaceState({ cactus: true, direct: true }, '', location.href);
+async function loadHealth() {
   try {
     const health = await api.health();
     const siteName = health.siteName || 'Cactus TV';
@@ -1151,5 +1343,10 @@ window.addEventListener('unhandledrejection', event => {
   } catch (error) {
     showNotice(error.message || '后端函数未连接', 'error');
   }
-  await applyRoute();
+}
+
+(async function init() {
+  renderHero(null);
+  if (!history.state?.cactus) history.replaceState({ cactus: true, direct: true }, '', location.href);
+  await Promise.allSettled([applyRoute(), loadHealth()]);
 })();

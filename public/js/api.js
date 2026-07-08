@@ -1,6 +1,6 @@
 const memoryCache = new Map();
 const inflight = new Map();
-const CACHE_PREFIX = 'cactus:api:v4:';
+const CACHE_PREFIX = 'cactus:api:v5:';
 
 function now() { return Date.now(); }
 
@@ -95,16 +95,16 @@ async function requestJson(path, options = {}) {
 }
 
 export const api = {
-  health: () => requestJson('/api/health', { cacheTtl: 60_000, timeout: 8_000 }),
-  home: () => requestJson('/api/home', { cacheTtl: 5 * 60_000, timeout: 12_000 }),
+  health: () => requestJson('/api/health', { cacheTtl: 5 * 60_000, timeout: 8_000 }),
+  home: () => requestJson('/api/home', { cacheTtl: 30 * 60_000, timeout: 12_000 }),
   search: (query, signal) => requestJson(`/api/search?q=${encodeURIComponent(query)}`, {
-    cacheTtl: 2 * 60_000,
+    cacheTtl: 5 * 60_000,
     dedupe: false,
     signal,
     timeout: 20_000,
   }),
   detail: (provider, id, signal) => requestJson(`/api/detail?provider=${encodeURIComponent(provider)}&id=${encodeURIComponent(id)}`, {
-    cacheTtl: 2 * 60_000,
+    cacheTtl: 10 * 60_000,
     dedupe: false,
     signal,
     timeout: 14_000,

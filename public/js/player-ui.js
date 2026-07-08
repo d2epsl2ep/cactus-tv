@@ -1,5 +1,3 @@
-import { setPlaybackQuality } from './player.js?v=0.4.0';
-
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
 function formatClock(seconds = 0) {
@@ -23,7 +21,7 @@ function svgIcon(name) {
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name] || ''}</svg>`;
 }
 
-export function createPlayerUI({ dialog, shell, video, message, retryButton }) {
+export function createPlayerUI({ dialog, shell, video, message, retryButton, setQuality = () => false }) {
   const ui = {
     controls: shell.querySelector('#playerControls'),
     centerPlay: shell.querySelector('#centerPlay'),
@@ -50,6 +48,7 @@ export function createPlayerUI({ dialog, shell, video, message, retryButton }) {
   let retryHandler = null;
   let state = 'idle';
   let lastPointerActivity = 0;
+  let timeFrame = 0;
 
   const setIcon = (button, icon) => { button.innerHTML = svgIcon(icon); };
 
@@ -104,6 +103,14 @@ export function createPlayerUI({ dialog, shell, video, message, retryButton }) {
       }
       ui.buffered.style.width = `${clamp(bufferedEnd / duration, 0, 1) * 100}%`;
     }
+  }
+
+  function scheduleTimeUpdate() {
+    if (timeFrame) return;
+    timeFrame = requestAnimationFrame(() => {
+      timeFrame = 0;
+      updateTime();
+    });
   }
 
   function togglePlay() {
@@ -186,7 +193,7 @@ export function createPlayerUI({ dialog, shell, video, message, retryButton }) {
     showControls();
   });
   ui.quality.addEventListener('change', () => {
-    setPlaybackQuality(Number(ui.quality.value));
+    setQuality(Number(ui.quality.value));
     showControls();
   });
   ui.fullscreen.addEventListener('click', toggleFullscreen);
@@ -242,9 +249,9 @@ export function createPlayerUI({ dialog, shell, video, message, retryButton }) {
   video.addEventListener('play', updatePlayButton);
   video.addEventListener('pause', updatePlayButton);
   video.addEventListener('ended', updatePlayButton);
-  video.addEventListener('timeupdate', updateTime);
-  video.addEventListener('durationchange', updateTime);
-  video.addEventListener('progress', updateTime);
+  video.addEventListener('timeupdate', scheduleTimeUpdate);
+  video.addEventListener('durationchange', scheduleTimeUpdate);
+  video.addEventListener('progress', scheduleTimeUpdate);
   video.addEventListener('volumechange', updateVolume);
   video.addEventListener('ratechange', () => { ui.speed.value = String(video.playbackRate); });
 
@@ -279,6 +286,8 @@ export function createPlayerUI({ dialog, shell, video, message, retryButton }) {
     reset() {
       clearTimeout(hideTimer);
       clearTimeout(gestureTimer);
+      if (timeFrame) cancelAnimationFrame(timeFrame);
+      timeFrame = 0;
       message.classList.add('hidden');
       ui.gesture.classList.add('hidden');
       ui.quality.innerHTML = '<option value="-1">自动</option>';
