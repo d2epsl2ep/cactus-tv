@@ -45,6 +45,10 @@ function decodedTarget(url) {
 }
 
 function isHlsUrl(url) {
+  try {
+    const parsed = new URL(url, location.href);
+    if (parsed.pathname === '/api/media/stream' && parsed.searchParams.get('mode') === 'hls') return true;
+  } catch {}
   return /\.m3u8(?:$|[?#])/i.test(decodedTarget(url));
 }
 
@@ -332,7 +336,7 @@ async function playWithHls(session) {
 async function playStream(video, url, preferNativeHls = true, resumeAt = 0) {
   stopStream(video);
   const value = String(url || '').trim();
-  if (!/^https?:\/\//i.test(value) && !value.startsWith('/api/stream?')) {
+  if (!/^https?:\/\//i.test(value) && !value.startsWith('/api/stream?') && !value.startsWith('/api/media/')) {
     throw new Error('播放地址格式无效');
   }
 
