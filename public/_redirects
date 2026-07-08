@@ -1,4 +1,5 @@
 /search / 200
+/library / 200
 /favorites / 200
 /history / 200
 /detail/* / 200
