@@ -1,5 +1,5 @@
-import { api } from './api.js?v=0.5.0';
-import { store } from './storage.js?v=0.5.0';
+import { api } from './api.js?v=0.5.1';
+import { store } from './storage.js?v=0.5.1';
 
 const $ = selector => document.querySelector(selector);
 const els = {
@@ -63,10 +63,14 @@ document.documentElement.classList.toggle('performance-lite', lowPowerMode);
 document.documentElement.classList.toggle('touch-device', deviceProfile.coarsePointer);
 
 const PREFER_PORTRAIT_CARDS = deviceProfile.narrow;
-const HOME_INITIAL_CARDS = lowPowerMode ? 4 : 6;
-const HOME_BATCH_SIZE = lowPowerMode ? 4 : 8;
+// First paint stays light, then the next rows/screens are prepared before the user reaches them.
+const HOME_INITIAL_CARDS = lowPowerMode ? 5 : 7;
+const HOME_BATCH_SIZE = lowPowerMode ? 6 : 10;
+const HOME_PRELOAD_SCREENS = deviceProfile.saveData ? 1.1 : lowPowerMode ? 2.1 : 3.0;
+const HOME_SCROLL_PRELOAD_SCREENS = deviceProfile.saveData ? 1.4 : lowPowerMode ? 2.6 : 3.8;
 const RESULT_BATCH_SIZE = lowPowerMode ? 18 : PAGE_SIZE;
-const IMAGE_ROOT_MARGIN = lowPowerMode ? '260px 180px' : '520px 360px';
+// Horizontal margin is deliberately much larger: posters are downloaded 2-3 screens ahead.
+const IMAGE_ROOT_MARGIN = deviceProfile.saveData ? '320px 460px' : lowPowerMode ? '560px 1100px' : '820px 1900px';
 
 let playerApi = null;
 let playerUI = null;
@@ -87,8 +91,8 @@ async function ensurePlayerModules() {
   if (playerApi && playerUI) return playerApi;
   if (!playerModulesPromise) {
     playerModulesPromise = Promise.all([
-      import('./player.js?v=0.5.0'),
-      import('./player-ui.js?v=0.5.0'),
+      import('./player.js?v=0.5.1'),
+      import('./player-ui.js?v=0.5.1'),
     ]).then(([apiModule, uiModule]) => {
       playerApi = apiModule;
       playerUI = uiModule.createPlayerUI({
@@ -167,6 +171,9 @@ function activateImage(img) {
   const src = img.dataset.src;
   if (!src) return;
   delete img.dataset.src;
+  // Once our observer selects an image, do not let native lazy-loading postpone it again.
+  // This makes the next 2-3 screens genuinely preload while decoding remains asynchronous.
+  if (!deviceProfile.saveData) img.loading = 'eager';
   img.src = src;
 }
 
@@ -510,9 +517,34 @@ function appendHomeCards(row, sectionIndex, amount = HOME_BATCH_SIZE) {
   return end < items.length;
 }
 
-function fillHomeRowNearEnd(row, sectionIndex) {
-  if (row.scrollLeft + row.clientWidth < row.scrollWidth - Math.max(220, row.clientWidth * .7)) return;
-  appendHomeCards(row, sectionIndex);
+function rowCardStep(row) {
+  const card = row.querySelector('.media-card');
+  if (!card) return Math.max(132, row.clientWidth / 4);
+  const gap = Number.parseFloat(getComputedStyle(row).columnGap) || 7;
+  return Math.max(1, card.getBoundingClientRect().width + gap);
+}
+
+function cardsPerViewport(row) {
+  return Math.max(1, Math.ceil(row.clientWidth / rowCardStep(row)));
+}
+
+function ensureHomeRowAhead(row, sectionIndex, screens = HOME_PRELOAD_SCREENS) {
+  const total = homeSectionsData[sectionIndex]?.items?.length || 0;
+  if (!total) return false;
+  const rendered = Number(row.dataset.rendered || 0);
+  const currentIndex = Math.max(0, Math.floor(row.scrollLeft / rowCardStep(row)));
+  const target = Math.min(total, currentIndex + Math.ceil(cardsPerViewport(row) * (1 + screens)));
+  if (rendered >= target) return false;
+  return appendHomeCards(row, sectionIndex, target - rendered);
+}
+
+function scheduleHomeRowPreload(row, sectionIndex, screens = HOME_PRELOAD_SCREENS) {
+  requestAnimationFrame(() => ensureHomeRowAhead(row, sectionIndex, screens));
+  idle(() => ensureHomeRowAhead(row, sectionIndex, screens), lowPowerMode ? 700 : 360);
+}
+
+function fillHomeRowAhead(row, sectionIndex) {
+  ensureHomeRowAhead(row, sectionIndex, HOME_SCROLL_PRELOAD_SCREENS);
 }
 
 function renderHome(sections) {
@@ -544,11 +576,13 @@ function renderHome(sections) {
     const row = els.homeSections.querySelector(`[data-section="${index}"]`);
     appendHomeCards(row, index, index === 0 ? HOME_INITIAL_CARDS + 2 : HOME_INITIAL_CARDS);
     bindCards(row, section.items || [], 'home');
+    // The first two shelves are prepared immediately after first paint, not after a swipe.
+    if (index < 2) scheduleHomeRowPreload(row, index, index === 0 ? HOME_PRELOAD_SCREENS + .5 : HOME_PRELOAD_SCREENS);
     let rowFrame = 0;
     row.addEventListener('scroll', () => {
       if (rowFrame) return;
       rowFrame = requestAnimationFrame(() => {
-        fillHomeRowNearEnd(row, index);
+        fillHomeRowAhead(row, index);
         rowFrame = 0;
       });
     }, { passive: true });
@@ -561,20 +595,25 @@ function renderHome(sections) {
         const sectionIndex = Number(entry.target.dataset.catalog);
         entry.target.classList.add('is-visible');
         const row = entry.target.querySelector('.media-row');
-        if (row) appendHomeCards(row, sectionIndex, HOME_BATCH_SIZE);
+        if (row) scheduleHomeRowPreload(row, sectionIndex);
         homeSectionObserver.unobserve(entry.target);
       }
-    }, { rootMargin: lowPowerMode ? '220px 0px' : '520px 0px', threshold: 0.01 });
+    }, { rootMargin: lowPowerMode ? '760px 0px' : '1180px 0px', threshold: 0.01 });
     els.homeSections.querySelectorAll('.catalog-section:not(:first-child)').forEach(section => homeSectionObserver.observe(section));
   } else {
-    els.homeSections.querySelectorAll('.catalog-section').forEach(section => section.classList.add('is-visible'));
+    els.homeSections.querySelectorAll('.catalog-section').forEach(section => {
+      section.classList.add('is-visible');
+      const sectionIndex = Number(section.dataset.catalog);
+      const row = section.querySelector('.media-row');
+      if (row) scheduleHomeRowPreload(row, sectionIndex);
+    });
   }
 
   els.homeSections.querySelectorAll('.row-control').forEach(button => button.addEventListener('click', () => {
     const sectionIndex = Number(button.dataset.row);
     const row = els.homeSections.querySelector(`[data-section="${sectionIndex}"]`);
     if (!row) return;
-    appendHomeCards(row, sectionIndex, HOME_BATCH_SIZE);
+    ensureHomeRowAhead(row, sectionIndex, HOME_SCROLL_PRELOAD_SCREENS + .8);
     row.scrollBy({ left: Number(button.dataset.dir) * Math.max(row.clientWidth * .82, 320), behavior: scrollBehavior() });
   }));
 }
