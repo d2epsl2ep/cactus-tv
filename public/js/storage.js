@@ -3,11 +3,18 @@ const KEYS = {
   history: 'cactus:history:v2',
   settings: 'cactus:settings:v3',
   sourceHealth: 'cactus:source-health:v1',
+  d1Migrated: 'cactus:d1-library-migrated:v1',
+  d1Pending: 'cactus:d1-library-pending:v1',
 };
 
 function read(key, fallback) {
   try { return JSON.parse(localStorage.getItem(key)) ?? fallback; }
   catch { return fallback; }
+}
+
+function writeNow(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); }
+  catch {}
 }
 
 const state = {
@@ -28,14 +35,24 @@ const state = {
 let favoriteKeys = new Set(state.favorites.map(item => item.key));
 let historyMap = new Map(state.history.map(item => [item.key, item]));
 const pendingWrites = new Map();
+const remoteOperations = new Map(
+  (Array.isArray(read(KEYS.d1Pending, [])) ? read(KEYS.d1Pending, []) : [])
+    .filter(operation => operation?.type && (operation?.key || operation?.item?.key))
+    .map(operation => [operationId(operation), operation]),
+);
 let writeScheduled = false;
+let remoteFlushTimer = 0;
+let remoteFlushPromise = null;
+let remoteReadyPromise = null;
+let remoteAvailable = false;
+
+function operationId(operation) {
+  return `${operation?.type || 'unknown'}:${operation?.key || operation?.item?.key || ''}`;
+}
 
 function flush() {
   writeScheduled = false;
-  for (const [key, value] of pendingWrites) {
-    try { localStorage.setItem(key, JSON.stringify(value)); }
-    catch {}
-  }
+  for (const [key, value] of pendingWrites) writeNow(key, value);
   pendingWrites.clear();
 }
 
@@ -49,16 +66,128 @@ function scheduleWrite(key, value) {
 
 function cloneList(list) { return list.map(item => ({ ...item })); }
 
-function replaceFavorites(list) {
-  state.favorites = Array.isArray(list) ? list.slice(0, 300) : [];
+function replaceFavoritesLocal(list) {
+  state.favorites = Array.isArray(list) ? list.filter(item => item?.key).slice(0, 300) : [];
   favoriteKeys = new Set(state.favorites.map(item => item.key));
   scheduleWrite(KEYS.favorites, state.favorites);
 }
 
-function replaceHistory(list) {
-  state.history = Array.isArray(list) ? list.slice(0, 200) : [];
+function replaceHistoryLocal(list) {
+  state.history = Array.isArray(list) ? list.filter(item => item?.key).slice(0, 200) : [];
   historyMap = new Map(state.history.map(item => [item.key, item]));
   scheduleWrite(KEYS.history, state.history);
+}
+
+function persistRemoteOperations() {
+  writeNow(KEYS.d1Pending, [...remoteOperations.values()]);
+}
+
+function queueRemote(operation) {
+  if (!operation?.type) return;
+  const id = operationId(operation);
+  if (!id.endsWith(':')) remoteOperations.set(id, operation);
+  persistRemoteOperations();
+  scheduleRemoteFlush();
+}
+
+function scheduleRemoteFlush(delay = 350) {
+  clearTimeout(remoteFlushTimer);
+  remoteFlushTimer = setTimeout(() => { flushRemote().catch(() => {}); }, delay);
+}
+
+async function requestLibrary(path = '/api/library', options = {}) {
+  const response = await fetch(path, {
+    credentials: 'same-origin',
+    headers: {
+      Accept: 'application/json',
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(options.headers || {}),
+    },
+    ...options,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || `片单同步失败（${response.status}）`);
+  return payload;
+}
+
+async function flushRemote(options = {}) {
+  if (remoteFlushPromise) return remoteFlushPromise;
+  if (!remoteOperations.size) return true;
+
+  remoteFlushPromise = (async () => {
+    while (remoteOperations.size) {
+      const batch = [...remoteOperations.entries()].slice(0, 20);
+      const operations = batch.map(([, operation]) => operation);
+      await requestLibrary('/api/library', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'batch', operations }),
+        keepalive: Boolean(options.keepalive),
+      });
+      for (const [id, sent] of batch) {
+        if (remoteOperations.get(id) === sent) remoteOperations.delete(id);
+      }
+      persistRemoteOperations();
+      remoteAvailable = true;
+    }
+    return true;
+  })().catch(error => {
+    remoteAvailable = false;
+    throw error;
+  }).finally(() => {
+    remoteFlushPromise = null;
+  });
+
+  return remoteFlushPromise;
+}
+
+function mergeByKey(primary, secondary) {
+  const map = new Map();
+  for (const item of [...(primary || []), ...(secondary || [])]) {
+    if (item?.key && !map.has(item.key)) map.set(item.key, item);
+  }
+  return [...map.values()];
+}
+
+async function syncRemote() {
+  try {
+    if (remoteOperations.size) await flushRemote();
+    const payload = await requestLibrary();
+    const remoteFavorites = Array.isArray(payload.favorites) ? payload.favorites : [];
+    const remoteHistory = Array.isArray(payload.history) ? payload.history : [];
+    const migrated = localStorage.getItem(KEYS.d1Migrated) === '1';
+
+    if (!migrated) {
+      const mergedFavorites = mergeByKey(remoteFavorites, state.favorites).slice(0, 300);
+      const mergedHistory = mergeByKey(
+        [...remoteHistory].sort((a, b) => Number(b?.watchedAt || 0) - Number(a?.watchedAt || 0)),
+        [...state.history].sort((a, b) => Number(b?.watchedAt || 0) - Number(a?.watchedAt || 0)),
+      ).sort((a, b) => Number(b?.watchedAt || 0) - Number(a?.watchedAt || 0)).slice(0, 200);
+
+      const remoteFavoriteKeys = new Set(remoteFavorites.map(item => item?.key));
+      const remoteHistoryKeys = new Set(remoteHistory.map(item => item?.key));
+      for (const item of state.favorites) {
+        if (item?.key && !remoteFavoriteKeys.has(item.key)) queueRemote({ type: 'favorite', enabled: true, item });
+      }
+      for (const item of state.history) {
+        if (item?.key && !remoteHistoryKeys.has(item.key)) queueRemote({ type: 'history', item });
+      }
+
+      replaceFavoritesLocal(mergedFavorites);
+      replaceHistoryLocal(mergedHistory);
+      try { localStorage.setItem(KEYS.d1Migrated, '1'); } catch {}
+    } else {
+      replaceFavoritesLocal(remoteFavorites);
+      replaceHistoryLocal(remoteHistory);
+    }
+
+    remoteAvailable = true;
+    await flushRemote().catch(() => {});
+    return true;
+  } catch {
+    remoteAvailable = false;
+    scheduleRemoteFlush(2500);
+    return false;
+  }
 }
 
 function healthId(provider, resource = '') {
@@ -110,25 +239,36 @@ function saveHealth(provider, resource, success) {
 }
 
 export const store = {
+  ready() {
+    if (!remoteReadyPromise) remoteReadyPromise = syncRemote();
+    return remoteReadyPromise;
+  },
+  remoteAvailable() { return remoteAvailable; },
+
   favorites() { return cloneList(state.favorites); },
-  replaceFavorites,
+  replaceFavorites(list) { replaceFavoritesLocal(list); },
   isFavorite(key) { return favoriteKeys.has(key); },
   setFavorite(item, enabled) {
+    if (!item?.key) return false;
     const next = state.favorites.filter(entry => entry.key !== item.key);
     if (enabled) next.unshift(item);
-    replaceFavorites(next);
+    replaceFavoritesLocal(next);
+    queueRemote(enabled
+      ? { type: 'favorite', enabled: true, item }
+      : { type: 'favorite', enabled: false, key: item.key });
     return enabled;
   },
   toggleFavorite(item) { return this.setFavorite(item, !favoriteKeys.has(item.key)); },
 
   history() { return cloneList(state.history); },
-  replaceHistory,
+  replaceHistory(list) { replaceHistoryLocal(list); },
   upsertHistory(item) {
     if (!item?.key) return;
     const record = { ...(historyMap.get(item.key) || {}), ...item, watchedAt: Date.now() };
     const next = state.history.filter(entry => entry.key !== item.key);
     next.unshift(record);
-    replaceHistory(next);
+    replaceHistoryLocal(next);
+    queueRemote({ type: 'history', item: record });
   },
   addHistory(item) { this.upsertHistory(item); },
   updateProgress(key, position, duration, url, extra = {}) {
@@ -168,7 +308,17 @@ export const store = {
     return providerScore * 0.45 + resourceScore * 0.55;
   },
 
-  flush,
+  flush() {
+    flush();
+    return flushRemote().catch(() => false);
+  },
 };
 
-window.addEventListener('pagehide', flush, { capture: true });
+window.addEventListener('online', () => {
+  remoteReadyPromise = null;
+  store.ready().catch(() => {});
+});
+window.addEventListener('pagehide', () => {
+  flush();
+  flushRemote({ keepalive: true }).catch(() => {});
+}, { capture: true });

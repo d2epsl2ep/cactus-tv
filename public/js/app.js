@@ -1,5 +1,5 @@
-import { api } from './api.js?v=0.6.0';
-import { store } from './storage.js?v=0.6.0';
+import { api } from './api.js?v=0.6.3';
+import { store } from './storage.js?v=0.6.3';
 
 const $ = selector => document.querySelector(selector);
 const els = {
@@ -1212,7 +1212,7 @@ function renderSavedView(view, options = {}) {
   setActiveTab(view);
   showNotice('');
   const list = view === 'favorites' ? store.favorites() : store.history();
-  render(list, view === 'favorites' ? '我的片单' : '继续观看', 'SAVED ON THIS DEVICE', { context: 'saved', filters: true });
+  render(list, view === 'favorites' ? '我的片单' : '继续观看', 'SYNCED WITH D1', { context: 'saved', filters: true });
   if (options.push !== false) navigate(`/${view}`, { apply: false, state: { view } });
   if (options.scroll !== false) window.scrollTo({ top: 0, behavior: scrollBehavior() });
 }
@@ -1457,8 +1457,8 @@ els.playerDialog.addEventListener('close', () => {
   }
 });
 
-window.addEventListener('pagehide', () => saveHistory());
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveHistory(); });
+window.addEventListener('pagehide', () => { saveHistory(); store.flush(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { saveHistory(); store.flush(); } });
 window.addEventListener('popstate', applyRoute);
 window.addEventListener('keydown', event => { if (event.key === 'Escape' && document.body.classList.contains('search-open')) closeSearch(); });
 
@@ -1496,5 +1496,6 @@ async function loadHealth() {
 (async function init() {
   renderHero(null);
   if (!history.state?.cactus) history.replaceState({ cactus: true, direct: true }, '', location.href);
-  await Promise.allSettled([applyRoute(), loadHealth()]);
+  await Promise.allSettled([store.ready(), loadHealth()]);
+  await applyRoute();
 })();
