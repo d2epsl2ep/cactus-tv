@@ -1920,3 +1920,5 @@ footer { display: flex; justify-content: space-between; gap: 30px; width: calc(1
   }
   .player-streamflow > small { font-size: 10px; }
 }
+.player-streamflow.streamflow-error .player-streamflow-head span { color: #ffbd70; }
+.player-streamflow.streamflow-error .player-streamflow-progress span { color: #ff9b55; }
