@@ -5,8 +5,6 @@ export interface Env {
   TMDB_BEARER_TOKEN?: string;
   DOUBAN_METADATA_URL?: string;
   SITE_NAME?: string;
-  STREAMFLOW_R2?: R2Bucket;
-  STREAMFLOW_QUEUE?: Queue<StreamflowMessage>;
 }
 
 export interface AppData {
@@ -25,7 +23,3 @@ export interface Provider {
   createdAt?: string;
   updatedAt?: string;
 }
-
-export type StreamflowMessage =
-  | { type: 'cache'; sessionId: string; revision: number }
-  | { type: 'clear'; requestedAt: number };
