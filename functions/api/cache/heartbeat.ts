@@ -7,6 +7,7 @@ import {
   normalizeStreamflowGeneration,
   prefetchStreamflow,
   providerAllowsUrl,
+  readStreamflowStatus,
   streamflowReady,
   validStreamflowId,
 } from '../../_shared/streamflow';
@@ -62,10 +63,14 @@ export const onRequestPost: PagesFunction<Env, any, AppData> = async ({ request,
   const enabled = body.enabled !== false;
   const generation = normalizeStreamflowGeneration(body.generation);
   const window = cacheWindow(position, duration);
-  const shouldPrefetch = Boolean(enabled && window.eligible);
+  const origin = new URL(request.url).origin;
+  const previous = await readStreamflowStatus(origin, id, generation);
+  const activeJob = Boolean(previous?.state === 'running' && Date.now() - Number(previous.updatedAt || 0) < 45_000);
+  const covered = Boolean(previous && previous.cachedThrough >= window.end - 1);
+  const foregroundPhase = phase === 'playing' || phase === 'paused';
+  const shouldPrefetch = Boolean(enabled && window.eligible && foregroundPhase && !activeJob && !covered);
 
   if (shouldPrefetch) {
-    const origin = new URL(request.url).origin;
     waitUntil(prefetchStreamflow({
       origin,
       sessionId: id,
@@ -84,6 +89,9 @@ export const onRequestPost: PagesFunction<Env, any, AppData> = async ({ request,
     engine: 'cache-api',
     eligible: enabled && window.eligible,
     prefetchScheduled: shouldPrefetch,
+    busy: activeJob,
+    covered,
+    status: previous,
     targetStart: window.start,
     targetEnd: window.end,
     generation,
