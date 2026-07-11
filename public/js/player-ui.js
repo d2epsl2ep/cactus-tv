@@ -189,6 +189,8 @@ export function createPlayerUI({
   }
 
   function showGesture(content, duration = 650) {
+    const kind = typeof content === 'object' ? String(content?.kind || '') : '';
+    ui.gesture.classList.toggle('player-gesture-boost', kind === 'boost');
     if (typeof content === 'string') {
       ui.gesture.textContent = content;
     } else {
@@ -424,7 +426,7 @@ export function createPlayerUI({
       navigator.vibrate?.(10);
       closeTools();
       hideControls();
-      showGesture({ label: '2× 倍速播放', detail: '松手恢复原速度', progress: 1 }, 0);
+      showGesture({ kind: 'boost', label: '2× 倍速播放', detail: '松手恢复原速度' }, 0);
       suppressClickUntil = performance.now() + 450;
     }, LONG_PRESS_MS);
   }
