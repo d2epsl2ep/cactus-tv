@@ -221,13 +221,20 @@ dialog { color: var(--text); }
 .center-play { position: absolute; z-index: 5; left: 50%; top: 50%; width: 70px; height: 70px; display: grid; place-items: center; padding: 0; border: 1px solid rgba(255,255,255,.38); border-radius: 50%; background: rgba(12,12,12,.72); box-shadow: 0 10px 32px rgba(0,0,0,.45); transform: translate(-50%,-50%); cursor: pointer; backdrop-filter: blur(10px); }
 .center-play:hover { background: rgba(255,255,255,.92); color: #111; transform: translate(-50%,-50%) scale(1.06); }
 .center-play svg { width: 34px; height: 34px; margin-left: 3px; }
-.player-gesture { position: absolute; z-index: 8; left: 50%; top: 43%; padding: 9px 13px; border-radius: 999px; background: rgba(0,0,0,.72); color: #fff; font-size: 13px; transform: translate(-50%,-50%); pointer-events: none; }
+.player-gesture { position: absolute; z-index: 8; left: 50%; top: 43%; min-width: 176px; max-width: min(78vw, 420px); display: grid; gap: 5px; padding: 11px 15px; border: 1px solid rgba(255,255,255,.12); border-radius: 12px; background: rgba(8,8,8,.82); color: #fff; text-align: center; transform: translate(-50%,-50%); pointer-events: none; contain: layout paint; }
+.player-gesture strong { font-size: 14px; font-weight: 800; line-height: 1.25; }
+.player-gesture small { overflow: hidden; color: rgba(255,255,255,.72); font-size: 11px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.player-gesture-meter { height: 4px; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,.18); }
+.player-gesture-meter i { display: block; height: 100%; border-radius: inherit; background: #fff; transform-origin: left center; }
+.player-tap-ripple { position: absolute; z-index: 6; width: 82px; height: 82px; display: grid; place-items: center; border: 2px solid rgba(255,255,255,.68); border-radius: 50%; background: rgba(0,0,0,.28); color: #fff; font-size: 17px; font-weight: 900; transform: translate(-50%,-50%) scale(.55); pointer-events: none; animation: cactus-tap-ripple .72s cubic-bezier(.2,.75,.2,1) forwards; }
+.player-tap-ripple-left { margin-left: -12px; }
+.player-tap-ripple-right { margin-left: 12px; }
+@keyframes cactus-tap-ripple { 0% { opacity: 0; transform: translate(-50%,-50%) scale(.45); } 22% { opacity: 1; } 100% { opacity: 0; transform: translate(-50%,-50%) scale(1.25); } }
 .player-message { position: absolute; z-index: 10; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 16px; padding: 30px; text-align: center; color: #ffd1d1; background: rgba(0,0,0,.88); }
 .player-message span { max-width: 720px; line-height: 1.7; }
 .player-message button { min-height: 40px; padding: 0 18px; border: 0; border-radius: 4px; background: #fff; color: #111; font-weight: 800; cursor: pointer; }
 .player-controls { position: absolute; z-index: 7; right: 0; bottom: 0; left: 0; padding: 56px 16px 13px; opacity: 0; background: linear-gradient(180deg,transparent,rgba(0,0,0,.18) 22%,rgba(0,0,0,.92)); transform: translateY(8px); transition: opacity .2s ease,transform .2s ease; pointer-events: none; }
-.video-shell.controls-visible .player-controls,
-.video-shell:not(.is-playing) .player-controls { opacity: 1; transform: none; pointer-events: auto; }
+.video-shell.controls-visible .player-controls { opacity: 1; transform: none; pointer-events: auto; }
 .player-progress-wrap { position: relative; height: 18px; display: flex; align-items: center; }
 .player-progress-track { position: absolute; right: 0; left: 0; height: 4px; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,.25); transition: height .15s ease; }
 .player-progress-wrap:hover .player-progress-track,
@@ -1790,181 +1797,79 @@ footer { display: flex; justify-content: space-between; gap: 30px; width: calc(1
   .player-dialog .player-source-switch { width: 100%; }
 }
 
-/* CactusStreamflow */
-.streamflow-panel {
-  margin-top: 16px;
-  padding: 15px;
-  border: 1px solid rgba(255,255,255,.1);
-  border-radius: 16px;
-  background: rgba(255,255,255,.035);
+/* v1.0.0 Cactus Player 2.0: deep buffer, low-jank gestures, and playback-first controls. */
+.video-shell:not(.controls-visible) .center-play {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
-.streamflow-panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
+.center-play { transition: opacity .16s ease, transform .16s ease, background .16s ease; }
+@media (pointer: coarse) {
+  .video-shell video { touch-action: none; }
+  .player-controls { transition-duration: .16s; }
+  .player-gesture { backdrop-filter: none; box-shadow: 0 5px 22px rgba(0,0,0,.32); }
 }
-.streamflow-panel-head > div { display: grid; gap: 4px; }
-.streamflow-panel-head strong { font-size: 14px; }
-.streamflow-panel-head small,
-.streamflow-session small { color: rgba(255,255,255,.52); line-height: 1.45; }
-.streamflow-panel-head button {
-  min-width: 58px;
-  min-height: 34px;
-  padding: 0 12px;
-  border: 1px solid rgba(255,255,255,.12);
-  border-radius: 10px;
-  background: rgba(255,255,255,.06);
-  color: #fff;
+
+/* Cactus Performance Core v1.1 */
+.personalized-section .section-heading h2::after {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 9px;
+  border-radius: 50%;
+  background: var(--accent, #e50914);
+  vertical-align: middle;
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent, #e50914) 72%, transparent);
 }
-.streamflow-sessions { display: grid; gap: 8px; margin-top: 12px; }
-.streamflow-session {
-  display: grid;
-  gap: 3px;
-  padding: 10px 11px;
-  border-radius: 11px;
-  background: rgba(0,0,0,.22);
-}
-.streamflow-session strong {
+.recommend-reason {
+  position: absolute;
+  z-index: 3;
+  left: 8px;
+  bottom: 8px;
+  max-width: calc(100% - 16px);
   overflow: hidden;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: rgba(5,5,5,.76);
   color: rgba(255,255,255,.9);
-  font-size: 12px;
+  font-size: 10px;
+  line-height: 1.15;
   text-overflow: ellipsis;
   white-space: nowrap;
+  pointer-events: none;
+  backdrop-filter: blur(5px);
 }
-.streamflow-clear {
-  width: 100%;
-  min-height: 42px;
-  margin-top: 12px;
-  border: 1px solid rgba(255,112,112,.22);
-  border-radius: 12px;
-  background: rgba(255,72,72,.08);
-  color: #ffb0b0;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 750;
-}
-.streamflow-clear:disabled,
-.streamflow-panel-head button:disabled { opacity: .45; cursor: wait; }
-
-/* CactusStreamflow player performance panel */
-.player-streamflow {
+.card-overlay + .watch-progress,
+.watch-progress {
   position: absolute;
-  z-index: 10;
-  top: max(14px, env(safe-area-inset-top));
-  right: max(14px, env(safe-area-inset-right));
-  left: auto;
-  width: min(310px, calc(100% - 92px));
-  padding: 10px 12px;
-  border: 1px solid rgba(255,255,255,.12);
-  border-radius: 12px;
-  background: rgba(8,8,10,.76);
-  box-shadow: 0 10px 28px rgba(0,0,0,.28);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  pointer-events: auto;
-  transition: opacity .2s ease, transform .2s ease;
-}
-.player-streamflow.hidden { display: none; }
-.player-streamflow-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-.player-streamflow-head strong {
-  font-size: 12px;
-  letter-spacing: .02em;
-}
-.player-streamflow-head span {
-  font-size: 11px;
-  color: #8df3ad;
-  white-space: nowrap;
-}
-.player-streamflow-head-actions {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-.player-streamflow-head-actions button {
-  width: 22px;
-  height: 22px;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: rgba(255,255,255,.10);
-  color: rgba(255,255,255,.78);
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-}
-.player-streamflow-head-actions button:hover { background: rgba(255,255,255,.18); color: #fff; }
-.player-streamflow-chip {
-  position: absolute;
-  z-index: 10;
-  top: max(14px, env(safe-area-inset-top));
-  right: max(14px, env(safe-area-inset-right));
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 30px;
-  padding: 6px 10px;
-  border: 1px solid rgba(255,255,255,.13);
-  border-radius: 999px;
-  background: rgba(8,8,10,.72);
-  color: rgba(255,255,255,.76);
-  box-shadow: 0 6px 18px rgba(0,0,0,.24);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  cursor: pointer;
-}
-.player-streamflow-chip.hidden { display: none; }
-.player-streamflow-chip span { font-size: 10px; }
-.player-streamflow-chip strong { color: #8df3ad; font-size: 10px; font-weight: 750; }
-.player-streamflow > small {
-  display: block;
-  margin-top: 5px;
-  color: rgba(255,255,255,.68);
-  font-size: 11px;
-  line-height: 1.35;
-}
-.player-streamflow-progress {
+  z-index: 5;
+  left: 7px;
+  right: 7px;
+  bottom: 5px;
   height: 3px;
-  margin-top: 8px;
   overflow: hidden;
   border-radius: 999px;
-  background: rgba(255,255,255,.12);
+  background: rgba(255,255,255,.26);
+  pointer-events: none;
 }
-.player-streamflow-progress span {
+.watch-progress > i {
   display: block;
-  width: 0;
   height: 100%;
   border-radius: inherit;
-  background: currentColor;
-  color: #61d887;
-  transition: width .25s ease;
+  background: var(--accent, #e50914);
 }
-.video-shell:not(.controls-visible) .player-streamflow.streamflow-ready {
-  opacity: .58;
-  transform: scale(.98);
-  transform-origin: top right;
-}
-@media (max-width: 640px) {
-  .player-streamflow {
-    top: auto;
-    right: max(10px, env(safe-area-inset-right));
-    bottom: max(72px, calc(env(safe-area-inset-bottom) + 66px));
-    left: auto;
-    width: min(270px, calc(100% - 20px));
-    padding: 8px 10px;
+.media-card:has(.watch-progress) .recommend-reason { bottom: 13px; }
+@media (pointer: coarse), (max-width: 760px) {
+  .recommend-reason {
+    left: 6px;
+    bottom: 7px;
+    max-width: calc(100% - 12px);
+    font-size: 9px;
+    backdrop-filter: none;
   }
-  .player-streamflow > small { font-size: 10px; }
-  .player-streamflow-chip {
-    top: max(10px, env(safe-area-inset-top));
-    right: max(10px, env(safe-area-inset-right));
-  }
+  .media-card:has(.watch-progress) .recommend-reason { bottom: 12px; }
 }
-.player-streamflow.streamflow-error .player-streamflow-head span { color: #ffbd70; }
-.player-streamflow.streamflow-error .player-streamflow-progress span { color: #ff9b55; }
+@supports not selector(:has(*)) {
+  .recommend-reason { bottom: 12px; }
+}
