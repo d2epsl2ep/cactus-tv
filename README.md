@@ -63,7 +63,21 @@ D1 数据库保存：
 
 ### 轻量部署
 
-前端由 Cloudflare Pages 托管，API 使用 Pages Functions，配置数据使用 D1。CactusStreamflow 直接使用 Pages Functions 内置的 Cloudflare Cache API，不需要 R2、Queue、信用卡或独立 Worker，仍然保持 GitHub 提交后由 Pages 自动部署。
+前端由 Cloudflare Pages 托管，API 使用 Pages Functions，配置数据使用 D1。CactusStreamflow 直接使用 Cloudflare Cache API，不需要 R2、Queue、独立 Worker 或额外 Cloudflare 资源。
+
+部署方式保持开源项目常见流程：
+
+```text
+Fork GitHub 项目
+        ↓
+Cloudflare Pages 连接仓库
+        ↓
+自动部署
+        ↓
+后台配置数据源
+```
+
+不需要下载 ZIP、手动解压、上传文件。
 
 ### 数据源与播放器分离
 
@@ -131,10 +145,15 @@ GitHub 仓库
 
 不要只把 `public` 文件夹拖进 Cloudflare Pages。Cloudflare 控制台的静态文件拖拽上传不会部署本项目的 `functions` 目录，因此前台可能能打开，但搜索、后台和播放代理都无法工作。
 
-### 二、解压并检查目录
-如果想拓展功能可以先download本项目
+### 二、Fork GitHub
 
-解压 ZIP 后，打开项目文件夹。正确的仓库根目录应直接包含：
+推荐方式：直接 Fork 项目，不需要下载 ZIP。
+
+1. 打开项目主页。
+2. 点击右上角 `Fork`。
+3. 在自己的仓库中继续维护。
+
+Fork 后，仓库根目录应直接包含：
 
 ```text
 functions/
@@ -145,23 +164,9 @@ package.json
 README.md
 ```
 
-不要形成下面这种双层目录：
+不要额外套一层项目文件夹。
 
-```text
-仓库根目录/
-└─ cactus-tv/
-   ├─ functions/
-   └─ public/
-```
-
-出现双层目录时，把内层项目文件全部移动到仓库根目录。
-
-### 三、 GitHub
-
-其实仅在 GitHub fork本项目即可，也可以download本项目后一一上传文件
-
-
-### 四、创建 Cloudflare Pages 项目
+### 三、创建 Cloudflare Pages 项目
 
 在 Cloudflare Dashboard 中进入 `Workers & Pages`，创建 Pages 项目并连接刚才的 GitHub 仓库。界面名称可能随 Cloudflare 更新略有变化。
 

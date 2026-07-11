@@ -1,12 +1,14 @@
-# Cactus TV v0.6.0 部署教程
+# Cactus TV v0.8.0 部署教程（Fork + Cloudflare Pages）
 
-这份教程沿用项目原来的部署方式：
+这份教程使用推荐部署方式：
 
 ```text
-GitHub 仓库 → Cloudflare Pages Git 集成 → Pages Functions + D1
+Fork GitHub 仓库 → Cloudflare Pages 连接 Fork → 自动部署
 ```
 
-不要使用 Cloudflare Pages 的直接上传，也不要把 `public` 文件夹单独上传。`functions` 必须和 `public` 一起放在仓库根目录，否则接口不会部署。
+不推荐下载 ZIP 后手动上传。Fork 可以保留完整 Git 历史，后续更新也只需要同步代码。
+
+不要使用 Cloudflare Pages 的静态文件直接上传，也不要只上传 `public` 文件夹。`functions` 必须和 `public` 一起位于仓库根目录，否则 Pages Functions 不会部署。
 
 ---
 
@@ -21,95 +23,27 @@ GitHub 仓库 → Cloudflare Pages Git 集成 → Pages Functions + D1
 
 ---
 
-## 二、解压项目
+## 二、Fork 项目
 
-解压 ZIP 后，进入 `cactus-tv` 文件夹。
+1. 打开 GitHub 项目主页。
+2. 点击右上角 `Fork`。
+3. 选择自己的账号和仓库名称。
+4. 等待 Fork 完成。
 
-正确结构：
-
-```text
-cactus-tv/
-├─ functions/
-├─ migrations/
-├─ public/
-├─ scripts/
-├─ package.json
-├─ package-lock.json
-├─ README.md
-└─ DEPLOY.md
-```
-
-打开 `cactus-tv` 后应该直接看到 `functions`、`public` 和 `package.json`。
-
-错误结构：
+Fork 完成后，你的仓库根目录应该直接包含：
 
 ```text
-仓库根目录/
-└─ cactus-tv/
-   ├─ functions/
-   └─ public/
-```
-
-出现这种情况时，Cloudflare 的根目录就不再是 `/`。最简单的处理方法是把 `cactus-tv` 里面的文件全部移到仓库根目录。
-
----
-
-## 三、上传到 GitHub
-
-### 1. 创建仓库
-
-打开 GitHub，点击右上角 `+`，选择 `New repository`。
-
-填写：
-
-```text
-Repository name: cactus-tv
-Visibility: Private
-```
-
-是否公开由你决定。私人使用建议选 `Private`。
-
-不要勾选自动创建 README、`.gitignore` 或 License，项目里已经有这些文件。
-
-点击 `Create repository`。
-
-### 2. 上传项目文件
-
-进入刚创建的空仓库，点击：
-
-```text
-uploading an existing file
-```
-
-把解压后的 `cactus-tv` 文件夹内部文件拖进上传区域。
-
-注意是拖入文件夹里面的内容，不是把外层 `cactus-tv` 再套进去。
-
-上传完成后，在提交说明中填写：
-
-```text
-Initial upload
-```
-
-点击 `Commit changes`。
-
-### 3. 检查仓库根目录
-
-提交后，GitHub 仓库首页应直接显示：
-
-```text
-functions
-migrations
-public
-scripts
+functions/
+migrations/
+public/
+scripts/
 package.json
+README.md
 ```
 
-没有直接看到这些目录时，先整理仓库结构，再继续部署。
+不要重新套一层文件夹。
 
----
-
-## 四、创建 Cloudflare Pages 项目
+## 三、创建 Cloudflare Pages 项目
 
 ### 1. 连接 GitHub
 
