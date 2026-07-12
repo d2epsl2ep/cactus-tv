@@ -250,7 +250,9 @@ function createSession(video, url, resumeAt) {
     recoveredPosition: false, ready: false, networkRecoveries: 0, mediaRecoveries: 0,
     stallSince: 0, stallRecoveries: 0, stallCount: 0, lastProgressAt: performance.now(),
     lastCurrentTime: 0, startedAt: performance.now(), firstFrameAt: 0, bandwidth: 0,
-    lastEmergencyDownshiftAt: 0, emergencyDownshifts: 0, bufferTarget: 0, cleanStreamRemoved: 0,
+    lastEmergencyDownshiftAt: 0, emergencyDownshifts: 0, bufferTarget: 0,
+    cleanStreamMarked: 0, cleanStreamInterstitials: 0, cleanStreamSkipped: 0,
+    lastCleanStreamSignature: '', adSkipTarget: 0, adSkipTimer: 0,
     wakeLock: null, offlineSince: 0, lastNetworkRecoveryAt: 0, bufferRampStage: 0, bufferPressureCount: 0,
     bandwidthSamples: [], peakBandwidth: 0, lastAggressivePromotionAt: 0, qualityRecoveryHoldUntil: 0,
     lastVideoFrameAt: performance.now(), lastVideoFrameMediaTime: 0, videoFrameSerial: 0,
@@ -923,6 +925,113 @@ function recordActiveThroughput(session, _hls, data) {
   session.bandwidth = session.bandwidth ? Math.round(session.bandwidth * 0.55 + sample * 0.45) : sample;
 }
 
+
+function networkHeader(networkDetails, name) {
+  if (networkDetails?.headers?.get) return networkDetails.headers.get(name);
+  if (typeof networkDetails?.getResponseHeader === 'function') return networkDetails.getResponseHeader(name);
+  return null;
+}
+
+function reportCleanStream(session, networkDetails) {
+  try {
+    const mode = String(networkHeader(networkDetails, 'x-cactus-cleanstream') || '').toUpperCase();
+    if (!mode) return;
+    const marked = Math.max(0, Number(networkHeader(networkDetails, 'x-cactus-cleanstream-marked') || 0) || 0);
+    const interstitials = Math.max(0, Number(networkHeader(networkDetails, 'x-cactus-cleanstream-interstitials') || 0) || 0);
+    const reason = String(networkHeader(networkDetails, 'x-cactus-cleanstream-reason') || '');
+    session.cleanStreamMarked = Math.max(session.cleanStreamMarked, marked);
+    session.cleanStreamInterstitials = Math.max(session.cleanStreamInterstitials, interstitials);
+    const signature = `${mode}:${marked}:${interstitials}:${reason}`;
+    if (signature === session.lastCleanStreamSignature) return;
+    session.lastCleanStreamSignature = signature;
+    emit(session.video, 'cleanstream', { mode, marked, interstitials, reason });
+  } catch {}
+}
+
+function markedAdMeta(fragment) {
+  const raw = String(fragment?.url || fragment?.relurl || '');
+  if (!raw) return null;
+  try {
+    const url = new URL(raw, location.href);
+    if (url.searchParams.get('cactus_ad') !== '1') return null;
+    return {
+      group: String(url.searchParams.get('cactus_ad_group') || ''),
+      reason: String(url.searchParams.get('cactus_ad_reason') || 'marker'),
+    };
+  } catch { return null; }
+}
+
+function adClusterForFragment(session, hls, fragment) {
+  const meta = markedAdMeta(fragment);
+  if (!meta) return null;
+  const levelDetails = hls.levels?.[Number(fragment?.level)]?.details || session.levelDetails;
+  const fragments = Array.isArray(levelDetails?.fragments) ? levelDetails.fragments : [];
+  let index = fragments.findIndex(item => Number(item?.sn) === Number(fragment?.sn));
+  if (index < 0) index = fragments.findIndex(item => String(item?.url || item?.relurl || '') === String(fragment?.url || fragment?.relurl || ''));
+  if (index < 0) {
+    const start = Number(fragment?.start || 0);
+    const duration = Number(fragment?.duration || 0);
+    return duration > 0 ? { start, end: start + duration, count: 1, reason: meta.reason } : null;
+  }
+  let count = 0;
+  let start = Number(fragments[index]?.start || fragment?.start || 0);
+  let end = start;
+  for (let cursor = index; cursor < fragments.length; cursor += 1) {
+    const item = fragments[cursor];
+    const itemMeta = markedAdMeta(item);
+    if (!itemMeta || (meta.group && itemMeta.group && itemMeta.group !== meta.group)) break;
+    const itemStart = Number(item?.start || end);
+    const itemDuration = Number(item?.duration || 0);
+    if (!Number.isFinite(itemDuration) || itemDuration <= 0) break;
+    end = Math.max(end, itemStart + itemDuration);
+    count += 1;
+  }
+  return count && end > start ? { start, end, count, reason: meta.reason } : null;
+}
+
+function skipMarkedAd(session, hls, fragment, phase = 'loading') {
+  if (session.cleaned || fragment?.type && fragment.type !== 'main') return false;
+  const cluster = adClusterForFragment(session, hls, fragment);
+  if (!cluster) return false;
+  const duration = cluster.end - cluster.start;
+  // Conservative upper bound: a match spanning most of a movie is almost
+  // certainly a bad rule, not an advertisement.
+  if (!Number.isFinite(duration) || duration < 0.2 || duration > 360) return false;
+  const target = normalizePlaybackPosition(session, cluster.end + 0.04, cluster.end);
+  const current = Number(session.video.currentTime || 0);
+  if (current >= target - 0.18 || Math.abs(Number(session.adSkipTarget || 0) - target) < 0.18) return false;
+  session.adSkipTarget = target;
+  session.cleanStreamSkipped += cluster.count;
+  session.requestedPosition = target;
+  session.seekTarget = target;
+  session.lastExplicitSeekAt = performance.now();
+  emit(session.video, 'adskip', {
+    from: cluster.start,
+    to: target,
+    duration,
+    segments: cluster.count,
+    reason: cluster.reason,
+    phase,
+  });
+  try {
+    hls.stopLoad();
+    session.hlsLoadingStopped = true;
+    if (session.video.readyState > 0) session.video.currentTime = target;
+    hls.startLoad(target);
+    session.hlsLoadingStopped = false;
+    safePlay(session.video).catch(() => {});
+  } catch { return false; }
+  if (session.adSkipTimer) {
+    clearTimeout(session.adSkipTimer);
+    session.timers.delete(session.adSkipTimer);
+  }
+  session.adSkipTimer = addTimer(session, () => {
+    session.adSkipTarget = 0;
+    session.adSkipTimer = 0;
+  }, 5000);
+  return true;
+}
+
 async function playWithHls(session) {
   const Hls = await loadHls();
   if (session.cleaned || session.generation !== playbackGeneration) throw new DOMException('播放已取消', 'AbortError');
@@ -1060,20 +1169,10 @@ async function playWithHls(session) {
     armStartupTimer(proxied ? 25000 : 32000);
     hls.on(Hls.Events.MEDIA_ATTACHED, () => { if (!session.cleaned) hls.loadSource(session.url); });
     hls.on(Hls.Events.MANIFEST_LOADED, (_event, data) => {
-      try {
-        const details = data?.networkDetails;
-        const getHeader = name => {
-          if (details?.headers?.get) return details.headers.get(name);
-          if (typeof details?.getResponseHeader === 'function') return details.getResponseHeader(name);
-          return null;
-        };
-        const mode = String(getHeader('x-cactus-cleanstream') || '').toUpperCase();
-        const removed = Number(getHeader('x-cactus-cleanstream-removed') || 0);
-        session.cleanStreamRemoved = Number.isFinite(removed) ? removed : 0;
-        if (mode) emit(session.video, 'cleanstream', { mode, removed: session.cleanStreamRemoved });
-      } catch {}
+      reportCleanStream(session, data?.networkDetails);
     });
     hls.on(Hls.Events.LEVEL_LOADED, (_event, data) => {
+      reportCleanStream(session, data?.networkDetails);
       const details = data?.details;
       session.levelDetails = details || null;
       const duration = robustPlaylistDuration(details);
@@ -1105,6 +1204,12 @@ async function playWithHls(session) {
       } catch (error) { finish(error); }
     });
     hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => emit(session.video, 'quality', { currentLevel: Number(data.level ?? -1), auto: hls.autoLevelEnabled }));
+    hls.on(Hls.Events.FRAG_LOADING, (_event, data) => {
+      skipMarkedAd(session, hls, data?.frag, 'loading');
+    });
+    hls.on(Hls.Events.FRAG_CHANGED, (_event, data) => {
+      skipMarkedAd(session, hls, data?.frag, 'playing');
+    });
     hls.on(Hls.Events.FRAG_LOADED, (_event, data) => {
       recordActiveThroughput(session, hls, data);
     });
@@ -1308,7 +1413,16 @@ async function playStream(video, url, preferNativeHls = true, resumeAt = 0) {
           emit(video, 'state', { state: 'loading', fallback: 'hls.js' });
           return playStream(video, value, false, fallbackPosition);
         }
-      } else await playWithHls(session);
+      } else {
+        try { await playWithHls(session); }
+        catch (error) {
+          const canFallBackToNative = supportsNativeHls(video)
+            && /(?:当前浏览器不支持 HLS 播放|HLS 播放组件加载失败)/.test(String(error?.message || ''));
+          if (!canFallBackToNative || session.cleaned) throw error;
+          emit(video, 'state', { state: 'loading', fallback: 'native-hls' });
+          await playNative(session);
+        }
+      }
     } else await playNative(session);
     diagnostics(session);
   } catch (error) {

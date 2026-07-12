@@ -1,6 +1,6 @@
-import { api } from './api.js?v=1.3.0';
-import { store } from './storage.js?v=1.3.0';
-import { buildPersonalizedHome } from './recommend.js?v=1.3.0';
+import { api } from './api.js?v=1.3.1';
+import { store } from './storage.js?v=1.3.1';
+import { buildPersonalizedHome } from './recommend.js?v=1.3.1';
 
 const $ = selector => document.querySelector(selector);
 const els = {
@@ -74,7 +74,7 @@ els.nativeHlsToggle.checked = settings.preferNativeHls;
 els.resumeToggle.checked = settings.resumePlayback;
 els.failoverToggle.checked = settings.autoFailover;
 els.autoNextToggle.checked = settings.autoNext;
-els.cleanStreamToggle.checked = settings.cleanStreamEnabled !== false;
+els.cleanStreamToggle.checked = settings.cleanStreamEnabled === true;
 els.recommendationToggle.checked = settings.personalizedRecommendations !== false;
 
 const deviceProfile = Object.freeze({
@@ -119,8 +119,8 @@ async function ensurePlayerModules() {
   if (playerApi && playerUI) return playerApi;
   if (!playerModulesPromise) {
     playerModulesPromise = Promise.all([
-      import('./player.js?v=1.3.0'),
-      import('./player-ui.js?v=1.3.0'),
+      import('./player.js?v=1.3.1'),
+      import('./player-ui.js?v=1.3.1'),
     ]).then(([apiModule, uiModule]) => {
       playerApi = apiModule;
       playerUI = uiModule.createPlayerUI({
@@ -1317,7 +1317,11 @@ async function startCandidate(playback, candidate, startAt) {
   playback.attemptedUrls.add(candidate.url);
   playback.attemptCount += 1;
   try {
-    await playStream(els.player, playback.activePlayUrl, settings.preferNativeHls, startAt);
+    const managedHlsAvailable = 'MediaSource' in window || 'ManagedMediaSource' in window;
+    const preferNative = settings.cleanStreamEnabled === true && managedHlsAvailable
+      ? false
+      : settings.preferNativeHls;
+    await playStream(els.player, playback.activePlayUrl, preferNative, startAt);
     if (playback.sequence !== playbackSequence) return;
     playback.starting = false;
     playback.lastSync = Date.now();

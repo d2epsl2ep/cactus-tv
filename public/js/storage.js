@@ -26,7 +26,7 @@ const state = {
     resumePlayback: true,
     autoFailover: true,
     autoNext: true,
-    cleanStreamEnabled: true,
+    cleanStreamEnabled: false,
     personalizedRecommendations: true,
     ...read('cactus:settings:v2', {}),
     ...read(KEYS.settings, {}),

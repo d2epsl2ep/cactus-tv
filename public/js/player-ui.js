@@ -854,10 +854,18 @@ export function createPlayerUI({
   });
   video.addEventListener('cactus:diagnostics', event => { diagnosticsData = event.detail; if (diagnosticsVisible) renderDiagnostics(); });
   video.addEventListener('cactus:cleanstream', event => {
-    const removed = Number(event.detail?.removed || 0);
-    if (event.detail?.mode === 'FILTERED' && removed > 0) {
-      showGesture({ label: `已跳过 ${removed} 个广告分片`, detail: 'Cactus Clean Stream' }, 1600);
+    const marked = Number(event.detail?.marked || 0);
+    const interstitials = Number(event.detail?.interstitials || 0);
+    if (event.detail?.mode === 'MARKED' && marked > 0) {
+      showGesture({ label: `已识别 ${marked} 个广告分片`, detail: '播放到广告段时自动整段跳过' }, 1700);
+    } else if (event.detail?.mode === 'INTERSTITIAL' && interstitials > 0) {
+      showGesture({ label: `已拦截 ${interstitials} 个插播广告`, detail: 'Cactus Clean Stream' }, 1600);
     }
+  });
+  video.addEventListener('cactus:adskip', event => {
+    const seconds = Math.max(1, Math.round(Number(event.detail?.duration || 0)));
+    const segments = Math.max(1, Number(event.detail?.segments || 1));
+    showGesture({ label: `已跳过 ${seconds} 秒广告`, detail: `${segments} 个分片 · Cactus Clean Stream` }, 1800);
   });
   video.addEventListener('cactus:error', event => {
     if (event.detail?.recoverable !== false) { setState('recovering'); return; }
